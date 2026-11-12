@@ -146,11 +146,15 @@ read_secret_stdin() {
 url_scheme() { local s="${1%%://*}"; printf '%s' "${s,,}"; }
 
 url_host() {
-  local r="${1#*://}"           # drop scheme
-  r="${r%%/*}"; r="${r##*@}"    # drop /path?query and user:pass@
+  local r="${1#*://}"            # drop scheme
+  # Drop path, query and fragment BEFORE the userinfo strip: a query can carry
+  # an '@', and stripping userinfo first made a crafted server URL read as
+  # loopback while curl still connected to the host in the authority.
+  r="${r%%[?#]*}"
+  r="${r##*@}"                   # then drop user:pass@
   case "$r" in
-    \[*\]*) r="${r%%\]*}]" ;;   # [ipv6]:port -> [ipv6]
-    *:*)    r="${r%%:*}"   ;;   # host:port    -> host
+    \[*\]*) r="${r%%\]*}]" ;;    # [ipv6]:port -> [ipv6]
+    *:*)   r="${r%%:*}"   ;;     # host:port    -> host
   esac
   printf '%s' "${r,,}"
 }
@@ -166,6 +170,15 @@ profile_allows_insecure() {
   id=$(jq -r '.activeProfileId // empty' <<<"$cfg" 2>/dev/null) || return 1
   [[ -n "$id" ]] || return 1
   [[ "$(jq -r --arg id "$id" '(.profiles // [])[] | select(.id == $id) | .allowInsecure // false' <<<"$cfg" 2>/dev/null)" == true ]]
+}
+
+# A Subsonic base URL is scheme://host[:port][/path]. A query or fragment has
+# no meaning there, and either one hides the real host from url_host(): a
+# crafted URL with a query reads as loopback while the request still goes to
+# the host in the authority. Refuse them outright rather than parsing around
+# them.
+require_clean_server_url() {
+  [[ "$1" != *"?"* && "$1" != *"#"* ]] || fail "server URL must not contain a query or fragment"
 }
 
 # False if the URL would put the replayable salt+token on a cleartext wire.
@@ -433,6 +446,7 @@ cmd_configure() {
     || fail "usage: configure [--allow-http] <name> <serverURL> <username>   (password on stdin)"
   [[ "$server" =~ ^https?:// ]] || fail "server URL must start with http:// or https://"
   server=$(normalize_url "$server")
+  require_clean_server_url "$server"
   [[ "$allow_http" == 1 ]] && ALLOW_INSECURE=1
   require_secure_url "$server" \
     || fail "server URL must be https:// (plain http:// is allowed for a server on this same machine, or for a server on your own network when you pass --allow-http) -- see README"
@@ -527,6 +541,7 @@ cmd_relogin() {
   username=$(jq -r '.username' <<<"$profile")
   name=$(jq -r '.name' <<<"$profile")
   [[ "$(jq -r '.allowInsecure // false' <<<"$profile")" == true ]] && ALLOW_INSECURE=1
+  require_clean_server_url "$server"
   require_secure_url "$server" || fail "profile server URL is insecure ($server); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
 
   local err
@@ -570,13 +585,19 @@ mint_url() {
 # Subsonic API actually uses is accepted: anything else (a path traversal, a
 # stray query string) would build a URL we never meant to fetch.
 require_endpoint() {
-  [[ "$1" =~ ^[A-Za-z0-9]+\.view$ ]] || fail "bad endpoint '$1' (expected <name>.view)"
+  # LC_ALL=C: under a UTF-8 locale glibc's collation widens [A-Za-z0-9] to
+  # non-ASCII letters, so "\u00e9.view" matched. Only ASCII is an endpoint.
+  local prev="${LC_ALL-}"
+  LC_ALL=C
+  [[ "$1" =~ ^[A-Za-z0-9]+\.view$ ]] || { LC_ALL="$prev"; fail "bad endpoint '$1' (expected <name>.view)"; }
+  LC_ALL="$prev"
 }
 
 build_url() {
   local endpoint="$1"; shift
   require_endpoint "$endpoint"
   require_active_profile
+  require_clean_server_url "$SERVER_URL"
   require_secure_url "$SERVER_URL" \
     || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
   mint_url "$endpoint" "$@"
@@ -596,6 +617,7 @@ cmd_urls() {
   [[ -n "$endpoint" && $# -gt 0 ]] || fail "usage: urls <endpoint> <id1> [id2 ...]"
   require_endpoint "$endpoint"
   require_active_profile
+  require_clean_server_url "$SERVER_URL"
   require_secure_url "$SERVER_URL" \
     || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
   local id

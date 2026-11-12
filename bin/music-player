@@ -116,7 +116,12 @@ ensure_mpv() {
   # Socket is dead or gone: reap any orphan mpv still bound to this path
   # (from a crash or a pre-lock race) so a clean single instance replaces
   # them. Safe here precisely because is_running just failed.
-  pkill -f -- "^mpv .*--input-ipc-server=$SOCK" 2>/dev/null || true
+  # $SOCK is a path, not an ERE: unescaped metacharacters either matched the
+  # wrong instance (x+y also matches xy) or made the pattern invalid and left
+  # the orphan alive. Escape it, and anchor on the mpv binary.
+  local sock_re
+  sock_re=$(printf '%s' "$SOCK" | sed 's/[][\\.*^$+?(){}|]/\\&/g')
+  pkill -f -- "^mpv .*--input-ipc-server=$sock_re$" 2>/dev/null || true
   rm -f "$SOCK"
   harden_log
   local args=(--idle=yes --no-video --no-terminal --no-config
@@ -152,7 +157,9 @@ json_string() { jq -Rn --arg v "${1:-}" '$v'; }
 # construction on the QML side; a missing line is a hard error rather than
 # a silently short queue.
 read_queue_stdin() {
-  local want="$1" i url title
+  # 10#: "020" is twenty here, not octal sixteen. Every count that reaches a
+  # loop goes through this, so one normalisation covers the whole queue.
+  local want=$((10#$1)) i url title
   QUEUE_URLS=()
   QUEUE_TITLES=()
   for (( i = 0; i < want; i++ )); do
@@ -194,11 +201,15 @@ cmd_ensure() {
 # script), or mpv just finishing a track and auto-advancing on its own.
 cmd_load_queue() {
   local start="$1" count="${2:-}"
-  [[ "$start" =~ ^[0-9]+$ && "$count" =~ ^[0-9]+$ && "$count" -ge 1 ]] \
+  # Digits only, no arithmetic yet: `-ge` on "08" aborts with an octal error
+  # before normalisation can happen. Validate, then normalise, then compare.
+  [[ "$start" =~ ^[0-9]+$ && "$count" =~ ^[0-9]+$ ]] \
     || fail "usage: load-queue <startIndex> <count>   (<count> url/title lines on stdin)"
+  start=$((10#$start)); count=$((10#$count))
+  (( count >= 1 )) || fail "usage: load-queue <startIndex> <count>   (<count> url/title lines on stdin)"
   # A start past the end would leave playlist-pos pointing at nothing, which
   # mpv silently ignores -- the queue loads but starts from entry 0 instead.
-  (( 10#$start < 10#$count )) || fail "load-queue: start index $start is outside the $count-track queue"
+  (( start < count )) || fail "load-queue: start index $start is outside the $count-track queue"
   read_queue_stdin "$count"
   ensure_mpv || fail "mpv failed to start (see $LOG)"
   local cmds="{\"command\":[\"playlist-clear\"]}"
@@ -248,6 +259,7 @@ cmd_reorder_tail() {
   local count="${1:-}"
   [[ "$count" =~ ^[0-9]+$ ]] \
     || fail "usage: reorder-tail <count>   (<count> url/title lines on stdin)"
+  count=$((10#$count))
   read_queue_stdin "$count"
   is_running || fail "reorder-tail: mpv is not running"
   local reply pos plcount i cmds=""
@@ -287,7 +299,7 @@ cmd_seek() {
   # mpv's IPC has an RCE-grade `run` verb — anything but a bare integer here
   # could smuggle in extra newline-separated commands.
   [[ "$secs" =~ ^[0-9]+$ ]] || fail "usage: seek <seconds>   (non-negative integer)"
-  cmd_simple "seek" "{\"command\":[\"seek\",$secs,\"absolute\"]}"
+  cmd_simple "seek" "{\"command\":[\"seek\",$((10#$secs)),\"absolute\"]}"
 }
 
 cmd_volume() {
@@ -295,7 +307,7 @@ cmd_volume() {
   # 10# so a leading zero isn't read as octal (08 would otherwise abort the
   # arithmetic and reject a perfectly valid volume).
   { [[ "$vol" =~ ^[0-9]+$ ]] && (( 10#$vol <= 100 )); } || fail "usage: volume <0-100>"
-  cmd_simple "volume" "{\"command\":[\"set_property\",\"volume\",$vol]}"
+  cmd_simple "volume" "{\"command\":[\"set_property\",\"volume\",$((10#$vol))]}"
 }
 
 # Repeat is delegated entirely to mpv's own loop properties rather than

@@ -31,11 +31,22 @@ ABSENT = 3
 
 
 def is_image(data):
-    """True for the formats a Subsonic server actually returns for coverArt."""
-    return (data.startswith(b"\xff\xd8\xff")            # JPEG
-            or data.startswith(b"\x89PNG\r\n\x1a\n")    # PNG
-            or data[:4] == b"GIF8"                      # GIF
-            or (data[:4] == b"RIFF" and data[8:12] == b"WEBP"))
+    """True for a *complete* image, not just a body that starts like one.
+
+    Checking only the leading magic bytes let a caller (or a hostile server)
+    prepend three JPEG bytes to a JSON error document and get it cached as
+    cover art. Requiring the format's own terminator costs nothing and closes
+    that.
+    """
+    if data.startswith(b"\xff\xd8\xff"):                 # JPEG: ends with EOI
+        return data.endswith(b"\xff\xd9")
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):            # PNG: ends with IEND
+        return b"IEND" in data[-16:]
+    if data[:4] == b"GIF8":                              # GIF: trailer 0x3B
+        return data.endswith(b"\x3b")
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":    # WEBP: RIFF header
+        return len(data) >= 16
+    return False
 
 
 def die(msg):
