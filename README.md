@@ -26,12 +26,15 @@ server on your own network (see below).
   sign out, or remove
 - Search artists, albums, and songs
 - Browse newest albums, artists → albums → tracks, playlists, and starred
-  favourites
+  favourites; newest albums are paged, with a **Load more** row at the end of
+  the list
 - Play/pause, next/previous, seek, shuffle, repeat; the queue is whatever
   list you played from
 - The playing track is marked in the list it came from
 - Now Playing shows elapsed/remaining time and a pill for what's actually
   streaming — `FLAC`, `MP3 320`, and so on
+- Volume on the speaker glyph: scroll to change it, click to mute
+- Click the album art to jump to the album the track came from
 - Star/unstar from the list or the Now Playing bar
 - Cover art, cached locally
 - Collapse the browsing view to just Now Playing while something's playing
@@ -102,6 +105,8 @@ switch servers from the gear icon.
 click next.
 
 **Panel** — click an artist/album/playlist to open it, a song to play it.
+Click the cover in Now Playing to jump to that track's album, and scroll the
+speaker glyph to change volume (click it to mute).
 `j`/`k`/`h`/`l` or arrows to move, `Enter`/`Space` to activate, `Esc` to go
 back. `/` searches, `f` favourites, `r` refreshes. Hardware media keys and
 `playerctl` work too.
@@ -191,7 +196,7 @@ integration test restarts Omarchy shell and requires unpaused Music playback.
 Run it explicitly:
 
 ```bash
-DROMIFY_RUN_SHELL_RELOAD_TEST=1 tests/shell-reload-integration.sh
+MUSIC_RUN_SHELL_RELOAD_TEST=1 tests/shell-reload-integration.sh
 ```
 
 It checks that the same `mpv` process survives, now-playing metadata matches
