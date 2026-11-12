@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dresraz.music",
   "name": "Music",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "dresraz",
   "license": "MIT",
   "description": "Browse, search, and stream your Navidrome/Subsonic library from the Omarchy bar — multiple servers, media-key support, favourites.",
