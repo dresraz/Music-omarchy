@@ -1059,6 +1059,19 @@ Item {
     _run(playerCtlProcess, [playerBin, "volume", String(Math.round(v))], function() {})
   }
 
+  // Click-to-mute from the speaker glyph. mpv has its own `mute` property, but
+  // routing through volume keeps one source of truth (the poll reads volume
+  // back) and needs no extra player subcommand.
+  property int _preMuteVolume: 100
+  function toggleMute() {
+    if (volume > 0) {
+      _preMuteVolume = volume
+      setVolume(0)
+    } else {
+      setVolume(_preMuteVolume > 0 ? _preMuteVolume : 100)
+    }
+  }
+
   function stopPlayback() {
     _discardPendingPlaybackRuns()
     ++_playGen

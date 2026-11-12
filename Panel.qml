@@ -1333,25 +1333,35 @@ Panel {
           font.pixelSize: Style.font.caption
         }
 
-        // Volume had a Service setter and no way to reach it, so every level
-        // change meant leaving the panel for playerctl.
+        // Volume lives on the speaker glyph, not on a second slider: two
+        // adjacent sliders were ambiguous and squeezed the seek bar down to
+        // almost nothing. Scroll to change, click to mute.
         Text {
+          id: volumeIcon
           textFormat: Text.PlainText
-          text: "󰕾"
-          color: root.dim
+          text: nav.volume <= 0 ? "󰖁" : (nav.volume < 50 ? "󰕿" : "󰕾")
+          color: volumeArea.containsMouse ? root.foreground : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-        }
 
-        PanelSlider {
-          id: volumeSlider
-          bar: root.bar
-          Layout.preferredWidth: Style.space(56)
-          minimum: 0
-          maximum: 100
-          value: nav.volume
-          onMoved: function(v) { volumeSlider.liveValue = v }
-          onReleased: function(v) { nav.setVolume(v) }
+          MouseArea {
+            id: volumeArea
+            anchors.fill: parent
+            // A glyph is a tiny target; pad the hit area without moving it.
+            anchors.margins: -Style.space(4)
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onWheel: function(wheel) {
+              var step = wheel.angleDelta.y > 0 ? 5 : -5
+              nav.setVolume(Math.max(0, Math.min(100, Math.round(nav.volume) + step)))
+            }
+            onClicked: nav.toggleMute()
+
+            PanelToolTip {
+              visible: volumeArea.containsMouse
+              text: "Volume " + Math.round(nav.volume) + "%  ·  scroll to change, click to mute"
+            }
+          }
         }
       }
     }
