@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# dromify-fsafe - the one path through which dromify-api touches its config
-# and cache tree (~/.config/omarchy/dromify, ~/.cache/dromify).
+# music-fsafe - the one path through which music-api touches its config
+# and cache tree (~/.config/omarchy/music, ~/.cache/music).
 #
 # It opens the trusted base directory once, then walks every remaining path
 # component with openat(O_NOFOLLOW) against the held directory fd. A symlink
@@ -14,11 +14,11 @@
 # replaces that entry itself and never follows it).
 #
 # Usage (relpath is always resolved under base, never absolute, no "..")
-#   dromify-fsafe read  <base> <relpath> <maxbytes>
+#   music-fsafe read  <base> <relpath> <maxbytes>
 #       file contents -> stdout. Exit 3 if the file (or a parent) is absent.
-#   dromify-fsafe stat  <base> <relpath>
+#   music-fsafe stat  <base> <relpath>
 #       Exit 0 if relpath is a non-empty regular file we own, else exit 3.
-#   dromify-fsafe write <base> <relpath> <maxbytes>
+#   music-fsafe write <base> <relpath> <maxbytes>
 #       stdin (at most maxbytes) -> relpath, atomically. Parent directories
 #       are created 0700 as needed and the leaf directory is forced to 0700.
 
@@ -31,7 +31,7 @@ ABSENT = 3
 
 
 def die(msg):
-    sys.stderr.write("dromify-fsafe: %s\n" % msg)
+    sys.stderr.write("music-fsafe: %s\n" % msg)
     raise SystemExit(1)
 
 
@@ -184,7 +184,7 @@ def write_file(parent_fd, leaf, rel, data):
 
 def main(argv):
     if len(argv) < 4:
-        die("usage: dromify-fsafe read|stat|write <base> <relpath> [maxbytes]")
+        die("usage: music-fsafe read|stat|write <base> <relpath> [maxbytes]")
     cmd, base = argv[1], argv[2]
     parent_parts, leaf = split_rel(argv[3])
 

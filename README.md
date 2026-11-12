@@ -1,4 +1,4 @@
-# Dromify for Omarchy
+# Music for Omarchy
 
 An [Omarchy](https://omarchy.org) shell plugin that brings a
 [Navidrome](https://www.navidrome.org) / Subsonic-API music library into the
@@ -6,11 +6,17 @@ bar: search, browse, and play, with transport controls, cover art, and
 favourites. Free and open source; no account or subscription beyond your own
 server.
 
-It shares a name with [Dromify](https://dromify.app), my Subsonic client for
-iPhone, Apple Watch, and Apple TV, but nothing else — it follows your
-Omarchy theme, not the app's.
+[Dromify](https://dromify.app) is a Subsonic client for iPhone, Apple Watch and
+Apple TV. This plugin started life as its Omarchy namesake — unrelated code,
+same idea, and it follows your Omarchy theme rather than the app's.
 
-![Dromify panel](docs/screenshot.png)
+This is [dresraz](https://github.com/dresraz)'s fork of
+[tallahootie/dromify-omarchy](https://github.com/tallahootie/dromify-omarchy),
+renamed to Music. Upstream is unmaintained; the fork is where the work happens
+now, and it adds one thing upstream refuses by design: plain `http://` for a
+server on your own network (see below).
+
+![Music panel](docs/screenshot.png)
 
 ## Features
 
@@ -56,6 +62,8 @@ All in Arch's official repos, most already on a stock Omarchy install:
 
 - `mpv` and [`mpv-mpris`](https://github.com/hoyon/mpv-mpris) (`omarchy pkg add mpv mpv-mpris`)
 - `curl`, `jq`, `socat`
+- `python3` — Omarchy ships it for its own shell helpers, and `bin/music-fsafe`
+  (the config/cache writer) is Python
 - `wl-clipboard` — ships with Omarchy; used by the copy-password button
 - `secret-tool` (`libsecret`) and a running Secret Service — GNOME Keyring
   or KWallet
@@ -67,21 +75,21 @@ omarchy plugin add https://github.com/dresraz/Music-omarchy.git --enable
 ```
 
 Pick a bar section when prompted (default: right). Move it later with
-`omarchy bar move tallahootie.dromify --section <left|center|right>`.
+`omarchy bar move dresraz.music --section <left|center|right>`.
 
 By hand:
 
 ```
 git clone https://github.com/dresraz/Music-omarchy.git \
-  ~/.config/omarchy/plugins/tallahootie.dromify
-omarchy plugin enable tallahootie.dromify
+  ~/.config/omarchy/plugins/dresraz.music
+omarchy plugin enable dresraz.music
 ```
 
 ## Use
 
 Click the music-note pill in the bar. It asks for a server name and the
 URL/username/password, then remembers you — server details in
-`~/.config/omarchy/dromify/config.json`, password in the keyring. Add or
+`~/.config/omarchy/music/config.json`, password in the keyring. Add or
 switch servers from the gear icon.
 
 **Bar pill** — left click opens the panel, right click play/pause, middle
@@ -96,7 +104,7 @@ back. `/` searches, `f` favourites, `r` refreshes. Hardware media keys and
 
 The Subsonic auth scheme sends a salted token (`t`/`s`) with every request.
 It's replayable, and the salt is right there for an offline crack of the
-password, so it must not travel a network in the clear. Dromify therefore
+password, so it must not travel a network in the clear. Music therefore
 **requires `https://`** for the server URL, with two exceptions:
 
 * a **loopback** address — `http://127.0.0.1[:port]` / `http://localhost[:port]`
@@ -105,7 +113,7 @@ password, so it must not travel a network in the clear. Dromify therefore
 * a server **on your own network**, if you opt in for that profile. Paste an
   `http://` URL in the connect form and an **Allow plain http** toggle appears;
   tick it and the profile is saved with `allowInsecure: true`. From the CLI the
-  same thing is `dromify-api configure --allow-http <name> <url> <user>`.
+  same thing is `music-api configure --allow-http <name> <url> <user>`.
 
 The opt-in only covers hosts that can't be reached from the public internet:
 private ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`), CGNAT and
@@ -140,33 +148,34 @@ automatically) or Navidrome's own `ND_TLSCERT` / `ND_TLSKEY` work equally well.
 ## Remove
 
 ```
-omarchy plugin remove tallahootie.dromify
+omarchy plugin remove dresraz.music
 ```
 
 To also clear saved servers and cache:
 
 ```
-rm -rf ~/.config/omarchy/dromify ~/.cache/dromify ~/.local/state/dromify
-secret-tool clear service omarchy-dromify
+rm -rf ~/.config/omarchy/music ~/.cache/music ~/.local/state/music
+secret-tool clear service omarchy-music
 ```
 
 ## How it's built
 
-Plain Quickshell QML (`Panel.qml`, `Service.qml`) over two small bash
-scripts:
+Plain Quickshell QML (`Panel.qml`, `Service.qml`) over three small helpers:
 
-- `bin/dromify-api` — Subsonic REST client: server profiles, browsing,
+- `bin/music-api` — Subsonic REST client: server profiles, browsing,
   search, favourites, cover art, stream URLs.
-- `bin/dromify-player` — drives one persistent `mpv` instance over its JSON
+- `bin/music-player` — drives one persistent `mpv` instance over its JSON
   IPC socket. mpv's playlist is the queue, so next/previous work through
   MPRIS and hardware media keys.
+- `bin/music-fsafe` — the only thing that touches config and cache paths:
+  openat/`O_NOFOLLOW` walking, size caps, atomic writes.
 
-Both run standalone:
+They run standalone:
 
 ```
-echo demo | bin/dromify-api configure Demo https://demo.navidrome.org demo
-bin/dromify-api get getRandomSongs.view size=5
-bin/dromify-player status
+echo demo | bin/music-api configure Demo https://demo.navidrome.org demo
+bin/music-api get getRandomSongs.view size=5
+bin/music-player status
 ```
 
 ## Licence

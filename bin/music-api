@@ -1,10 +1,10 @@
 #!/bin/bash
-# dromify-api - Subsonic/Navidrome REST client used by Dromify, the
-# Omarchy plugin. Talks the same salt+token auth scheme as Dromify's
+# music-api - Subsonic/Navidrome REST client used by Music, the
+# Omarchy plugin. Talks the same salt+token auth scheme as Music's
 # NavidromeClient (Subsonic API 1.16.1, JSON responses): t = md5(password + salt).
 #
 # Supports multiple named server profiles. Config lives in
-# ~/.config/omarchy/dromify/config.json:
+# ~/.config/omarchy/music/config.json:
 #   { "activeProfileId": "...", "profiles": [{id, name, serverURL, username, allowInsecure}, ...] }
 # Passwords are kept out of that file entirely and stored one per profile id
 # in the desktop keyring via secret-tool (libsecret), matching the app's use
@@ -18,28 +18,28 @@
 # a pipe, never an argv.
 #
 # Usage:
-#   dromify-api configure [--allow-http] <name> <serverURL> <username>   # password on stdin
+#   music-api configure [--allow-http] <name> <serverURL> <username>   # password on stdin
 #                                               -> adds a profile, makes it active
-#   dromify-api relogin <profileId>                       # password on stdin
+#   music-api relogin <profileId>                       # password on stdin
 #                                               -> re-signs a logged-out profile in
-#   dromify-api status       -> {"configured":bool,"active":{id,name,serverURL,username}|null,"profiles":[...]}
-#   dromify-api switch <id>  -> makes an existing profile active
-#   dromify-api forget <id>  -> removes one profile (and its stored password)
-#   dromify-api ping
-#   dromify-api get <endpoint> [key=value ...]   -> unwrapped subsonic-response JSON on stdout
-#   dromify-api url <endpoint> [key=value ...]   -> a fully-authed URL on stdout (no request made)
-#   dromify-api urls <endpoint> <id1> [id2 ...]  -> one fully-authed URL per line
-#   dromify-api copy-password [profileId]  -> puts that profile's password (the
+#   music-api status       -> {"configured":bool,"active":{id,name,serverURL,username}|null,"profiles":[...]}
+#   music-api switch <id>  -> makes an existing profile active
+#   music-api forget <id>  -> removes one profile (and its stored password)
+#   music-api ping
+#   music-api get <endpoint> [key=value ...]   -> unwrapped subsonic-response JSON on stdout
+#   music-api url <endpoint> [key=value ...]   -> a fully-authed URL on stdout (no request made)
+#   music-api urls <endpoint> <id1> [id2 ...]  -> one fully-authed URL per line
+#   music-api copy-password [profileId]  -> puts that profile's password (the
 #                                   active one if no id) on the Wayland
 #                                   clipboard via wl-copy --sensitive, so
 #                                   Omarchy's clipboard history skips it
 
 set -uo pipefail
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/dromify"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/music"
 CONFIG_FILE="$CONFIG_DIR/config.json"
-SECRET_SERVICE="omarchy-dromify"
-CLIENT_NAME="Dromify"
+SECRET_SERVICE="omarchy-music"
+CLIENT_NAME="Music"
 API_VERSION="1.16.1"
 
 # The server on the other end is not trusted to bound what it sends back: a
@@ -62,7 +62,13 @@ LOOPBACK_HOSTS=" localhost 127.0.0.1 ::1 [::1] "
 # 1 when a cleartext http:// server is permitted for this run: set by
 # `configure --allow-http` (before any profile exists) or by
 # load_active_profile() for a profile saved with allowInsecure: true.
-ALLOW_INSECURE="${DROMIFY_ALLOW_INSECURE:-0}"
+ALLOW_INSECURE="${MUSIC_ALLOW_INSECURE:-0}"
+
+# 1 while `configure` is verifying a *new* profile's URL. The active profile's
+# opt-in must not leak into that check: adding a second http:// server has to
+# carry its own --allow-http, or one insecure profile would silently authorise
+# every later one.
+CONFIGURING=0
 
 # True for a host that only exists on a local network: RFC1918, CGNAT (which
 # is also what Tailscale hands out), link-local, IPv6 ULA/link-local,
@@ -97,26 +103,28 @@ is_private_host() {
   return 1
 }
 
-# The plugin used to be called "Dromarchy" (before it took the Dromify
-# name to match the iOS app) - these are where its config/keyring entries
-# lived, so a rename doesn't force everyone to reconfigure their server.
+# Names this plugin shipped under before it became "Music": first "Dromarchy",
+# then "Dromify". These are where its config/keyring entries lived, so the
+# renames don't force anyone to reconfigure their server.
 OLD_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/dromarchy/config.json"
 OLD_SECRET_SERVICE="omarchy-dromarchy"
+PREV_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/dromify/config.json"
+PREV_SECRET_SERVICE="omarchy-dromify"
 
-fail() { echo "dromify-api: $*" >&2; exit 1; }
+fail() { echo "music-api: $*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || fail "'$1' is required but not found on PATH"; }
 
 need jq
 need curl
 need md5sum
-need python3   # runs the bundled dromify-fsafe helper (see fsafe() below)
+need python3   # runs the bundled music-fsafe helper (see fsafe() below)
 
 # Every read/write/mkdir in our config + cache tree goes through this bundled
 # helper, which traverses each path component with openat(O_NOFOLLOW) so a
 # symlink swapped into a parent directory can't redirect the operation. It
 # sits next to this script; resolve its directory even when we're on PATH.
-FSAFE="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/dromify-fsafe"
+FSAFE="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/music-fsafe"
 [[ -f "$FSAFE" ]] || fail "bundled helper not found: $FSAFE"
 fsafe() { python3 "$FSAFE" "$@"; }
 
@@ -174,6 +182,7 @@ require_secure_url() {
   [[ "$LOOPBACK_HOSTS" == *" $host "* ]] && return 0
   is_private_host "$host" || return 1
   [[ "$ALLOW_INSECURE" == 1 ]] && return 0
+  [[ "$CONFIGURING" == 1 ]] && return 1
   profile_allows_insecure
 }
 
@@ -231,32 +240,40 @@ curl_json() {
 # --- config storage ----------------------------------------------------------
 
 # One-time move from the old "Dromarchy"-branded config dir/keyring service
-# to today's "Dromify" ones (see OLD_CONFIG_FILE/OLD_SECRET_SERVICE above).
+# to today's "Music" ones (see OLD_CONFIG_FILE/OLD_SECRET_SERVICE above).
 # Copies config.json over as-is and re-stores each profile's password under
 # the new secret-tool service, so the plugin rename doesn't strand anyone's
 # already-configured server. No-op once $CONFIG_FILE exists.
 migrate_from_dromarchy() {
   [[ -f "$CONFIG_FILE" ]] && return 0
-  [[ -f "$OLD_CONFIG_FILE" ]] || return 0
-  # Read the old file fully before writing anything (read_small_file / fsafe
-  # reject a symlinked path outright), so a rejected read can't leave a
-  # half-written new config behind.
-  local old_raw
-  old_raw=$(read_small_file "$OLD_CONFIG_FILE") || fail "could not read $OLD_CONFIG_FILE for migration"
-  printf '%s' "$old_raw" | write_config || fail "could not migrate $OLD_CONFIG_FILE"
+  local pair old_cfg old_svc
+  # Newest previous name first: a plugin that was already on "Dromify" has its
+  # server saved there, and one still on "Dromarchy" is two renames behind.
+  for pair in "$PREV_CONFIG_FILE|$PREV_SECRET_SERVICE" "$OLD_CONFIG_FILE|$OLD_SECRET_SERVICE"; do
+    old_cfg="${pair%%|*}"; old_svc="${pair##*|}"
+    [[ -f "$old_cfg" ]] || continue
+    # Read the old file fully before writing anything (read_small_file / fsafe
+    # reject a symlinked path outright), so a rejected read can't leave a
+    # half-written new config behind.
+    local old_raw
+    old_raw=$(read_small_file "$old_cfg") || fail "could not read $old_cfg for migration"
+    printf '%s' "$old_raw" | write_config || fail "could not migrate $old_cfg"
 
-  local p id name server username password
-  while IFS= read -r p; do
-    id=$(jq -r '.id' <<<"$p")
-    name=$(jq -r '.name' <<<"$p")
-    server=$(jq -r '.serverURL' <<<"$p")
-    username=$(jq -r '.username' <<<"$p")
-    password=$(secret-tool lookup service "$OLD_SECRET_SERVICE" profile "$id" 2>/dev/null)
-    [[ -n "$password" ]] || continue
-    secret-tool store --label="Dromify: $name ($username@$server)" \
-      service "$SECRET_SERVICE" profile "$id" <<<"$password" 2>/dev/null
-    secret-tool clear service "$OLD_SECRET_SERVICE" profile "$id" >/dev/null 2>&1
-  done < <(jq -c '(.profiles // [])[]' <<<"$(read_small_file "$CONFIG_FILE")" 2>/dev/null)
+    local p id name server username password
+    while IFS= read -r p; do
+      id=$(jq -r '.id' <<<"$p")
+      name=$(jq -r '.name' <<<"$p")
+      server=$(jq -r '.serverURL' <<<"$p")
+      username=$(jq -r '.username' <<<"$p")
+      password=$(secret-tool lookup service "$old_svc" profile "$id" 2>/dev/null)
+      [[ -n "$password" ]] || continue
+      secret-tool store --label="Music: $name ($username@$server)" \
+        service "$SECRET_SERVICE" profile "$id" <<<"$password" 2>/dev/null
+      secret-tool clear service "$old_svc" profile "$id" >/dev/null 2>&1
+    done < <(jq -c '(.profiles // [])[]' <<<"$(read_small_file "$CONFIG_FILE")" 2>/dev/null)
+    return 0
+  done
+  return 0
 }
 
 # One-time upgrade from the pre-multi-profile config shape
@@ -282,7 +299,7 @@ migrate_legacy_config() {
   host=$(printf '%s' "$legacy_url" | sed -E 's#^[a-z]+://##; s#/.*##')
   write_config < <(jq -n --arg id "$id" --arg name "$host" --arg u "$legacy_url" --arg n "$legacy_user" \
     '{activeProfileId: $id, profiles: [{id: $id, name: $name, serverURL: $u, username: $n}]}')
-  secret-tool store --label="Dromify: $host ($legacy_user@$legacy_url)" \
+  secret-tool store --label="Music: $host ($legacy_user@$legacy_url)" \
     service "$SECRET_SERVICE" profile "$id" <<<"$legacy_password"
   secret-tool clear service "$SECRET_SERVICE" server "$legacy_url" username "$legacy_user" >/dev/null 2>&1
 }
@@ -350,7 +367,7 @@ load_active_profile() {
 }
 
 require_active_profile() {
-  load_active_profile || fail "not configured; run: dromify-api configure <name> <serverURL> <username> <password>"
+  load_active_profile || fail "not configured; run: music-api configure <name> <serverURL> <username> <password>"
 }
 
 normalize_url() {
@@ -410,6 +427,7 @@ cmd_configure() {
   local allow_http=0
   if [[ "${1:-}" == "--allow-http" ]]; then allow_http=1; shift; fi
   local name="${1:-}" server="${2:-}" username="${3:-}" password insecure=false
+  CONFIGURING=1
   password=$(read_secret_stdin)
   [[ -n "$name" && -n "$server" && -n "$username" && -n "$password" ]] \
     || fail "usage: configure [--allow-http] <name> <serverURL> <username>   (password on stdin)"
@@ -432,7 +450,7 @@ cmd_configure() {
   ' <<<"$cfg")
   write_config <<<"$next"
 
-  secret-tool store --label="Dromify: $name ($username@$server)" \
+  secret-tool store --label="Music: $name ($username@$server)" \
     service "$SECRET_SERVICE" profile "$id" <<<"$password" \
     || fail "could not save password to the desktop keyring (is a Secret Service / gnome-keyring running?)"
 
@@ -514,7 +532,7 @@ cmd_relogin() {
   local err
   err=$(verify_credentials "$server" "$username" "$password" 2>&1) || fail "$err"
 
-  secret-tool store --label="Dromify: $name ($username@$server)" \
+  secret-tool store --label="Music: $name ($username@$server)" \
     service "$SECRET_SERVICE" profile "$id" <<<"$password" \
     || fail "could not save password to the desktop keyring"
   write_config < <(jq -c --arg id "$id" '.activeProfileId = $id' <<<"$cfg")
@@ -525,7 +543,7 @@ cmd_relogin() {
 
 # Builds a fully authenticated URL for $1=endpoint, remaining args key=value.
 # Each call mints a fresh salt/token, matching the Subsonic spec (the server
-# doesn't require a stable token; only Dromify's own client caches one to
+# doesn't require a stable token; only Music's own client caches one to
 # avoid image flicker across re-renders, which doesn't apply to a one-shot
 # CLI call).
 build_url() {
@@ -552,7 +570,7 @@ cmd_url() {
 }
 
 # Batch form of `url` for building a whole queue's stream URLs in one
-# process instead of one dromify-api invocation per track: `urls
+# process instead of one music-api invocation per track: `urls
 # stream.view id1 id2 ...` prints one URL per line, same order as the ids.
 cmd_urls() {
   local endpoint="$1"; shift
@@ -622,7 +640,7 @@ cmd_cover() {
   local cache_base="${XDG_CACHE_HOME:-$HOME/.cache}"
   local safe_id
   safe_id=$(printf '%s' "$id" | tr -c 'A-Za-z0-9._-' '_')
-  local rel="dromify/covers/${safe_id}-${size}.jpg"
+  local rel="music/covers/${safe_id}-${size}.jpg"
   local path="$cache_base/$rel"
   # fsafe stat resolves the cache path with openat(O_NOFOLLOW) too, so a
   # symlinked cache dir/entry reads as "absent" and we just re-fetch.

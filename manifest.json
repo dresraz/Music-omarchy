@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "tallahootie.dromify",
-  "name": "Dromify",
+  "id": "dresraz.music",
+  "name": "Music",
   "version": "1.0.0",
-  "author": "Tallahootie",
+  "author": "dresraz",
   "license": "MIT",
   "description": "Browse, search, and stream your Navidrome/Subsonic library from the Omarchy bar — multiple servers, media-key support, favourites.",
   "kinds": [
@@ -15,7 +15,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Dromify",
+    "displayName": "Music",
     "description": "Search, browse, and play music from your Navidrome/Subsonic server.",
     "category": "Media",
     "allowMultiple": false,

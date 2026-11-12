@@ -9,8 +9,8 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "tallahootie.dromify"
-  ipcTarget: "tallahootie.dromify"
+  moduleName: "dresraz.music"
+  ipcTarget: "dresraz.music"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -37,7 +37,7 @@ Panel {
   // fallback instance that's never null — nav uses it only until the
   // shared one shows up, at which point every binding here re-evaluates
   // and switches over on its own.
-  readonly property var nav: (bar && bar.shell && bar.shell.firstPartyServiceFor("tallahootie.dromify")) || _localNav
+  readonly property var nav: (bar && bar.shell && bar.shell.firstPartyServiceFor("dresraz.music")) || _localNav
   Service { id: _localNav }
 
   // --- per-instance keyboard focus / scroll ---------------------------------
@@ -103,7 +103,7 @@ Panel {
   property bool formAllowInsecure: false
 
   // A plain http:// server needs an explicit opt-in -- unless it's loopback,
-  // which the helper always allows. Mirrors the loopback list in dromify-api.
+  // which the helper always allows. Mirrors the loopback list in music-api.
   readonly property bool formNeedsInsecureOptIn: {
     var s = String(formServer).trim().toLowerCase()
     if (s.indexOf("http://") !== 0) return false
@@ -242,7 +242,7 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              text: "Dromify"
+              text: "Music"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.title

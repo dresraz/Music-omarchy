@@ -1,7 +1,7 @@
 // Pure helpers for shaping Subsonic/Navidrome JSON (as returned by
-// `bin/dromify-api get ...`, already unwrapped to the inner
+// `bin/music-api get ...`, already unwrapped to the inner
 // "subsonic-response" object) into the flat row lists the panel renders.
-// Field names mirror Dromify's DromifyKit models (id, name/title, artist,
+// Field names mirror Music's MusicKit models (id, name/title, artist,
 // artistId, album, albumId, coverArt, duration, track, year, songCount,
 // albumCount) so anyone who knows the app recognizes the shapes here.
 

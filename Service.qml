@@ -4,9 +4,9 @@ import Quickshell.Io
 import "Model.js" as Model
 
 // Bridges the QML panel to the two bundled shell scripts:
-//   bin/dromify-api    - Subsonic/Navidrome REST calls (config, browse,
+//   bin/music-api    - Subsonic/Navidrome REST calls (config, browse,
 //                          search, favourites, cover art)
-//   bin/dromify-player - a single always-idle mpv instance, controlled
+//   bin/music-player - a single always-idle mpv instance, controlled
 //                          over its JSON IPC socket
 //
 // Every external call goes through a Process; nothing here talks to the
@@ -18,21 +18,21 @@ Item {
   id: root
 
   // Directory this plugin was loaded from — works whether it's installed at
-  // the conventional ~/.config/omarchy/plugins/tallahootie.dromify or
+  // the conventional ~/.config/omarchy/plugins/dresraz.music or
   // cloned/symlinked elsewhere, since it's derived from this file's own URL
   // rather than assumed.
   readonly property string pluginDir: {
     var u = Qt.resolvedUrl(".").toString()
     return u.replace(/^file:\/\//, "").replace(/\/$/, "")
   }
-  readonly property string apiBin: pluginDir + "/bin/dromify-api"
-  readonly property string playerBin: pluginDir + "/bin/dromify-player"
+  readonly property string apiBin: pluginDir + "/bin/music-api"
+  readonly property string playerBin: pluginDir + "/bin/music-player"
 
-  // dromify-api already caps what it will buffer from the server, but the
+  // music-api already caps what it will buffer from the server, but the
   // response comes back through a StdioCollector that would hold it a second
   // time in this (the bar's) process. Reject anything past this ceiling
   // before it reaches JSON.parse, so a regression or a hostile server can't
-  // balloon the shell's memory. Matches dromify-api's own MAX_JSON_BYTES.
+  // balloon the shell's memory. Matches music-api's own MAX_JSON_BYTES.
   readonly property int _maxApiBytes: 16 * 1024 * 1024
   function _overSized(s) { return s && s.length > _maxApiBytes }
 
@@ -65,7 +65,7 @@ Item {
   property bool loading: false
 
   // Repeat is delegated to mpv's own loop-playlist/loop-file properties
-  // (see dromify-player's set-repeat) — this just tracks which of the
+  // (see music-player's set-repeat) — this just tracks which of the
   // three states is active for the UI. Not reset by playFrom: repeat is a
   // player-wide preference, not tied to any one queue.
   property string repeatMode: "off"   // off | all | one
@@ -373,7 +373,7 @@ Item {
   }
 
   // allowInsecure opts this profile into a plain http:// server on the local
-  // network. dromify-api refuses cleartext for anything but loopback unless
+  // network. music-api refuses cleartext for anything but loopback unless
   // the profile says so (see require_secure_url), and still refuses a public
   // http:// host even then.
   function configure(name, serverUrl, user, password, allowInsecure, callback) {
@@ -466,7 +466,7 @@ Item {
   }
 
   // Copies a saved profile's password to the clipboard, for pasting into
-  // its web UI's sign-in form once. dromify-api does the copy itself
+  // its web UI's sign-in form once. music-api does the copy itself
   // (keyring -> `wl-copy --sensitive`), so the plaintext never passes
   // through here or an argv, and Omarchy's clipboard-history capture skips
   // the --sensitive offer. `profileId` empty/omitted means the active one.
@@ -474,7 +474,7 @@ Item {
     var args = [apiBin, "copy-password"]
     if (profileId) args.push(String(profileId))
     Quickshell.execDetached(args)
-    Quickshell.execDetached(["notify-send", "-a", "Dromify", "-t", "4000",
+    Quickshell.execDetached(["notify-send", "-a", "Music", "-t", "4000",
       "Password copied to clipboard", "Paste it into the server's sign-in form."])
   }
 
@@ -592,7 +592,7 @@ Item {
   // just ignored with no feedback.
   property int _playGen: 0
 
-  // Interleaves urls with each song's title label for dromify-player
+  // Interleaves urls with each song's title label for music-player
   // load-queue, which bakes each one in as that playlist entry's own
   // force-media-title — see the long comment on cmd_load_queue for why
   // that beats setting the current title reactively after a skip. Just
@@ -600,7 +600,7 @@ Item {
   // just as correctly (same per-file timing), and the system media widget
   // appends it after this title itself, so folding the artist in here too
   // made it show up twice.
-  // Builds the stdin payload for dromify-player load-queue / reorder-tail:
+  // Builds the stdin payload for music-player load-queue / reorder-tail:
   // url and title on their own lines, one pair per track. The stream URLs
   // carry the Subsonic salt+token, so they go over stdin, never argv (see
   // _runWithSecret). Titles are forced onto a single line — they're only a
@@ -712,7 +712,7 @@ Item {
   // currently playing stream just to re-register titles it already has —
   // an audible pause on every toggle, and previously a restart to 0 too,
   // since loadfile always starts its target entry from position 0.
-  // dromify-player's reorder-tail instead strips whatever mpv's playlist
+  // music-player's reorder-tail instead strips whatever mpv's playlist
   // has after its own current position and appends the new tail fresh, so
   // mpv never issues a loadfile for the entry it's already playing.
   function _reorderTail(newQueue, newIndex) {
@@ -763,7 +763,7 @@ Item {
   function pollNow() {
     if (queueIndex < 0 || statusPollProcess.running) return
     // Tags this poll with the play generation active right now, so if a
-    // newer playFrom starts before this poll's `dromify-player status`
+    // newer playFrom starts before this poll's `music-player status`
     // subprocess returns, the (by then stale) result gets discarded instead
     // of applied — see the onExited handler below for why that matters.
     statusPollProcess._gen = _playGen
@@ -872,7 +872,7 @@ Item {
         try { data = JSON.parse(apiOut.text) } catch (e) { /* leave null */ }
         if (cb) cb(data, "")
       } else {
-        var msg = String(apiErr.text || "request failed").replace(/^dromify-api:\s*/, "").trim()
+        var msg = String(apiErr.text || "request failed").replace(/^music-api:\s*/, "").trim()
         root.lastError = msg
         if (cb) cb(null, msg)
       }
@@ -931,8 +931,8 @@ Item {
 
   // Like _run, but stashes a payload for the Process to write to the child's
   // stdin from its onStarted handler, keeping it out of argv (world-readable
-  // via /proc/<pid>/cmdline). Used for the server password (dromify-api
-  // configure/relogin) and for the stream-URL queue (dromify-player
+  // via /proc/<pid>/cmdline). Used for the server password (music-api
+  // configure/relogin) and for the stream-URL queue (music-player
   // load-queue/reorder-tail) — those URLs carry the Subsonic salt+token,
   // which is a replayable credential.
   function _runWithSecret(proc, command, secret, callback) {
@@ -962,7 +962,7 @@ Item {
   // password: it's written to the child's stdin from onStarted (see
   // _runWithSecret) rather than passed in `command`, so it never appears in
   // argv / /proc. switch and rename leave _secret "" and write nothing; the
-  // dromify-api subcommands they call don't read stdin.
+  // music-api subcommands they call don't read stdin.
   Process {
     id: configureProcess
     property var _cb: null
@@ -981,7 +981,7 @@ Item {
       configureProcess._secret = ""
       var cb = configureProcess._cb; configureProcess._cb = null
       if (exitCode !== 0) {
-        if (cb) cb(null, String(configureErr.text || "").replace(/^dromify-api:\s*/, "").trim())
+        if (cb) cb(null, String(configureErr.text || "").replace(/^music-api:\s*/, "").trim())
         return
       }
       var data = null
@@ -999,7 +999,7 @@ Item {
     onExited: function(exitCode) {
       var cb = forgetProcess._cb; forgetProcess._cb = null
       if (exitCode !== 0) {
-        if (cb) cb(null, String(forgetErr.text || "").replace(/^dromify-api:\s*/, "").trim())
+        if (cb) cb(null, String(forgetErr.text || "").replace(/^music-api:\s*/, "").trim())
         return
       }
       var data = null

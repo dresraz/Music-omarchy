@@ -1,6 +1,6 @@
 #!/bin/bash
-# dromify-player - manages a single, always-idle mpv instance used by
-# Dromify, the Omarchy plugin, controlled entirely over its JSON IPC socket.
+# music-player - manages a single, always-idle mpv instance used by
+# Music, the Omarchy plugin, controlled entirely over its JSON IPC socket.
 #
 # mpv's own playlist IS the play queue — load-queue hands it every track up
 # front. That's what makes native "playlist-next"/"playlist-prev" work, which
@@ -26,22 +26,22 @@
 # to every local user for as long as this helper runs.
 #
 # Usage:
-#   dromify-player load-queue <startIndex> <count>   # then <count> url\ntitle\n
+#   music-player load-queue <startIndex> <count>   # then <count> url\ntitle\n
 #                                                    # pairs (one field per line)
 #                                                    # on stdin
-#   dromify-player reorder-tail <count>              # <count> url\ntitle\n pairs
+#   music-player reorder-tail <count>              # <count> url\ntitle\n pairs
 #                                                    # on stdin
-#   dromify-player next | previous          # mpv's own playlist navigation
-#   dromify-player pause | resume | toggle-pause | stop
-#   dromify-player seek <seconds>           # absolute position
-#   dromify-player volume <0-100>
-#   dromify-player set-repeat <off|all|one> # off, loop-playlist, or loop-file
-#   dromify-player status                   -> JSON transport snapshot
-#   dromify-player quit                     # fully stop the mpv instance
+#   music-player next | previous          # mpv's own playlist navigation
+#   music-player pause | resume | toggle-pause | stop
+#   music-player seek <seconds>           # absolute position
+#   music-player volume <0-100>
+#   music-player set-repeat <off|all|one> # off, loop-playlist, or loop-file
+#   music-player status                   -> JSON transport snapshot
+#   music-player quit                     # fully stop the mpv instance
 
 set -uo pipefail
 
-fail() { echo "dromify-player: $*" >&2; exit 1; }
+fail() { echo "music-player: $*" >&2; exit 1; }
 
 # The mpv IPC socket and the spawn lock must live in a directory only this
 # user can write to: the socket accepts commands including mpv's `run` verb
@@ -52,16 +52,16 @@ fail() { echo "dromify-player: $*" >&2; exit 1; }
 if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" ]]; then
   RUNTIME_DIR="$XDG_RUNTIME_DIR"
 else
-  RUNTIME_DIR="/tmp/dromify-$(id -u)"
+  RUNTIME_DIR="/tmp/music-$(id -u)"
   [[ -L "$RUNTIME_DIR" ]] && fail "$RUNTIME_DIR is a symlink; refusing to use it"
   mkdir -p "$RUNTIME_DIR" || fail "cannot create $RUNTIME_DIR"
   chmod 700 "$RUNTIME_DIR" 2>/dev/null || true
   [[ -d "$RUNTIME_DIR" && -O "$RUNTIME_DIR" && ! -L "$RUNTIME_DIR" ]] \
     || fail "$RUNTIME_DIR is not a directory this user owns"
 fi
-SOCK="$RUNTIME_DIR/dromify-mpv.sock"
-LOG="${XDG_STATE_HOME:-$HOME/.local/state}/dromify/mpv.log"
-LOCK="$RUNTIME_DIR/dromify-mpv.lock"
+SOCK="$RUNTIME_DIR/music-mpv.sock"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/music/mpv.log"
+LOCK="$RUNTIME_DIR/music-mpv.lock"
 MPRIS_SO_CANDIDATES=(/usr/lib/mpv-mpris/mpris.so /etc/mpv/scripts/mpris.so)
 
 need() { command -v "$1" >/dev/null 2>&1 || fail "'$1' is required but not found on PATH"; }
