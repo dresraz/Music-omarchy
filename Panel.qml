@@ -598,7 +598,9 @@ Panel {
                 Layout.preferredHeight: Math.min(listColumn.implicitHeight, Style.space(460))
                 // Bumped so the empty-state text below centers in the panel's
                 // body instead of sitting cramped just under the search field.
-                Layout.minimumHeight: (nav.navigableRows.length === 0 && nav.rows.length === 0 && !nav.listLoading) ? Style.space(160) : Style.space(80)
+                Layout.minimumHeight: (nav.navigableRows.length === 0 && nav.rows.length === 0
+                                       && !nav.listLoading && !nav.searchLoading && !nav.albumsLoading)
+                                      ? Style.space(160) : Style.space(80)
                 contentWidth: width
                 contentHeight: listColumn.implicitHeight
                 clip: true
@@ -613,7 +615,7 @@ Panel {
                 // against the Flickable's own viewport dimensions instead.
                 Text {
                   textFormat: Text.PlainText
-                  visible: nav.listLoading || nav.searchLoading
+                  visible: nav.listLoading || nav.searchLoading || nav.albumsLoading
                   x: (panelFlick.width - implicitWidth) / 2
                   y: (panelFlick.height - implicitHeight) / 2
                   text: "Loading…"
@@ -627,7 +629,7 @@ Panel {
                 // dead server and unreadable response behind a shrug.
                 Text {
                   textFormat: Text.PlainText
-                  visible: !nav.listLoading && !nav.searchLoading
+                  visible: !nav.listLoading && !nav.searchLoading && !nav.albumsLoading
                            && nav.navigableRows.length === 0 && nav.rows.length === 0
                   x: Style.space(16)
                   width: panelFlick.width - Style.space(32)
@@ -960,7 +962,16 @@ Panel {
 
     MouseArea {
       anchors.fill: parent
+      hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      // Same cursor sync as ItemRow: without it, hovering "Load more" left the
+      // keyboard cursor on some other row, so Enter activated that instead.
+      onEntered: {
+        if (nav.keyboardActive) return
+        nav.cursorActive = true; nav.focusSection = "list"
+        nav.listIndex = Math.max(0, nav.navigableRows.length - 1)
+      }
+      onPositionChanged: nav.keyboardActive = false
       onClicked: nav.loadMoreAlbums()
     }
   }
@@ -977,7 +988,7 @@ Panel {
     // Comparing the actual id sidesteps whatever that mechanism is.
     readonly property int navIndex: {
       if (!rowData || !rowData.data) return -1
-      var i = nav.rowNavIndex[rowData.data.id]
+      var i = nav.rowNavIndex[rowData.type + ":" + rowData.data.id]
       return i === undefined ? -1 : i
     }
     readonly property var item: rowData ? rowData.data : null
@@ -1157,6 +1168,15 @@ Panel {
           if (npBar.song && npBar.song.coverArt) nav.requestCover(npBar.song.coverArt, 200)
         }
       }
+
+      // Click the art to drill to the album it came from: "what is this?"
+      // otherwise means re-navigating from the top of the library.
+      MouseArea {
+        anchors.fill: parent
+        enabled: !!(npBar.song && npBar.song.albumId)
+        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: nav.showCurrentAlbum()
+      }
     }
 
     ColumnLayout {
@@ -1239,6 +1259,27 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
+        }
+
+        // Volume had a Service setter and no way to reach it, so every level
+        // change meant leaving the panel for playerctl.
+        Text {
+          textFormat: Text.PlainText
+          text: "󰕾"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        PanelSlider {
+          id: volumeSlider
+          bar: root.bar
+          Layout.preferredWidth: Style.space(56)
+          minimum: 0
+          maximum: 100
+          value: nav.volume
+          onMoved: function(v) { volumeSlider.liveValue = v }
+          onReleased: function(v) { nav.setVolume(v) }
         }
       }
     }

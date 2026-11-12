@@ -1,7 +1,7 @@
 // Pure helpers for shaping Subsonic/Navidrome JSON (as returned by
 // `bin/music-api get ...`, already unwrapped to the inner
 // "subsonic-response" object) into the flat row lists the panel renders.
-// Field names mirror Music's MusicKit models (id, name/title, artist,
+// Field names mirror the Dromify iOS app's models (id, name/title, artist,
 // artistId, album, albumId, coverArt, duration, track, year, songCount,
 // albumCount) so anyone who knows the app recognizes the shapes here.
 
@@ -85,32 +85,6 @@ function extractStarred(body) {
     albums: safeArray(r.album),
     songs: safeArray(r.song)
   }
-}
-
-function albumSubtitle(album) {
-  var parts = []
-  if (album && album.artist) parts.push(album.artist)
-  if (album && album.year) parts.push(String(album.year))
-  return parts.join(" · ")
-}
-
-function artistSubtitle(artist) {
-  var count = artist ? Number(artist.albumCount || 0) : 0
-  if (count <= 0) return ""
-  return count + (count === 1 ? " album" : " albums")
-}
-
-function songSubtitle(song) {
-  var parts = []
-  if (song && song.artist) parts.push(song.artist)
-  if (song && song.album) parts.push(song.album)
-  return parts.join(" · ")
-}
-
-function playlistSubtitle(playlist) {
-  var count = playlist ? Number(playlist.songCount || 0) : 0
-  if (count <= 0) return "Empty"
-  return count + (count === 1 ? " track" : " tracks")
 }
 
 function isStarred(item) {

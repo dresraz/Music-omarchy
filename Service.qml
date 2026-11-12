@@ -188,7 +188,9 @@ Item {
     if (tab === "albums") {
       albumsOffset = 0
       albumsHasMore = false
+      albumsLoading = true
       fetchAlbums("newest", 0, function(rows, err) {
+        albumsLoading = false
         if (err) { listError = err; rows = [] }
         tabAlbums = rows
         albumsOffset = rows.length
@@ -215,6 +217,10 @@ Item {
       albumsOffset += rows.length
       albumsHasMore = rows.length >= albumPageSize
       tabAlbums = tabAlbums.concat(rows)
+      // A page that lands exactly on the page size leaves hasMore true with
+      // nothing behind it; the next click empties the "Load more" row, so pull
+      // the cursor back inside the list rather than leaving it one past the end.
+      ensureCursor()
     })
   }
 
@@ -332,12 +338,27 @@ Item {
     var list = navigableRows
     for (var i = 0; i < list.length; i++) {
       var r = list[i]
-      if (r && r.data && r.data.id !== undefined && m[r.data.id] === undefined) m[r.data.id] = i
+      // Keyed by type AND id: a playlist may legally contain the same track
+      // twice, and keying by id alone made both rows resolve to the first
+      // index (two rows highlighted, hover jumping to the wrong one).
+      if (r && r.data && r.data.id !== undefined) {
+        var key = r.type + ":" + r.data.id
+        if (m[key] === undefined) m[key] = i
+      }
     }
     return m
   }
   readonly property bool listLoading: root.searchActive ? false : (root.topFrame ? root.topFrame.loading : false)
   readonly property string listTitle: root.searchActive ? "Search results" : (root.topFrame ? root.topFrame.title : "")
+
+  // Drills to the album of whatever is playing. The cover in the Now Playing
+  // bar calls this, so "what is this track?" doesn't mean re-navigating.
+  function showCurrentAlbum() {
+    var s = currentSong
+    if (!s || !s.albumId) return
+    searchQuery = ""
+    pushAlbum({ id: s.albumId, name: s.album || "" })
+  }
 
   function songListForRow(row) {
     if (root.searchActive) return root.searchResults.songs
@@ -1077,36 +1098,54 @@ Item {
   // panel's status poll for good.
   function _run(proc, command, callback) {
     if (proc.running) {
-      proc._pending = { command: command, callback: callback, secret: null }
+      _parkCall(proc, { command: command, callback: callback, secret: null })
       return false
     }
+    // A plain call must never inherit a parked secret: configure/relogin leave
+    // one behind if their child never started, and the next plain _run on the
+    // same Process would pipe a password into e.g. `switch`.
+    if (proc._secret !== undefined) proc._secret = ""
     proc._cb = callback
     proc.command = command
     proc.running = true
     return true
   }
 
-  // Dispatches whatever was parked by _run while `proc` was busy. Called at
-  // the end of every Process's onExited.
+  // A FIFO, not a single slot: several settings actions share one Process
+  // (switch/rename/logout/configure all ride configureProcess) and each
+  // callback owns a piece of state — configure clears `connecting`, switch
+  // applies the new profile. Letting a newer call overwrite a parked one
+  // dropped that reset, which could leave the connect form stuck on
+  // "Connecting…" forever.
+  function _parkCall(proc, call) {
+    if (!proc._pending) proc._pending = []
+    proc._pending.push(call)
+  }
+
+  // Dispatches the next parked call, one per exit. Deferred through callLater
+  // like the api/cover queues: restarting a Process re-entrantly from inside
+  // its own onExited risks the runtime ignoring it, and a lost callback here
+  // means a lost `loading = false`.
   function _drainPending(proc) {
-    var next = proc._pending
-    proc._pending = null
-    if (!next) return
-    proc._cb = next.callback
-    if (next.secret !== null) proc._secret = next.secret
-    proc.command = next.command
-    proc.running = true
+    if (!proc._pending || proc._pending.length === 0) return
+    var next = proc._pending.shift()
+    Qt.callLater(function() {
+      proc._cb = next.callback
+      if (next.secret !== null && proc._secret !== undefined) proc._secret = next.secret
+      proc.command = next.command
+      proc.running = true
+    })
   }
 
   // Like _run, but stashes a payload for the Process to write to the child's
-  // stdin from its onStarted handler, keeping it out of argv (world-readable
-  // via /proc/<pid>/cmdline). Used for the server password (music-api
+  // stdin from onStarted handler, keeping it out of argv (world-readable via
+  // /proc/<pid>/cmdline). Used for the server password (music-api
   // configure/relogin) and for the stream-URL queue (music-player
   // load-queue/reorder-tail) — those URLs carry the Subsonic salt+token,
   // which is a replayable credential.
   function _runWithSecret(proc, command, secret, callback) {
     if (proc.running) {
-      proc._pending = { command: command, callback: callback, secret: secret }
+      _parkCall(proc, { command: command, callback: callback, secret: secret })
       return false
     }
     proc._cb = callback
