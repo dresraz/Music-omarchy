@@ -1213,11 +1213,15 @@ Panel {
     }
   }
 
-  component NowPlayingBar: RowLayout {
+  component NowPlayingBar: ColumnLayout {
     id: npBar
-    spacing: Style.space(10)
+    spacing: Style.space(6)
 
     readonly property var song: nav.currentSong
+
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(10)
 
     Rectangle {
       Layout.alignment: Qt.AlignVCenter
@@ -1302,68 +1306,6 @@ Panel {
         elide: Text.ElideRight
       }
 
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: Style.space(6)
-
-        Text {
-          textFormat: Text.PlainText
-          text: Model.formatDuration(nav.position)
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-
-        PanelSlider {
-          id: seekSlider
-          bar: root.bar
-          Layout.fillWidth: true
-          minimum: 0
-          maximum: Math.max(1, nav.duration)
-          value: nav.position
-          onMoved: function(v) { seekSlider.liveValue = v }
-          onReleased: function(v) { nav.seekFraction(nav.duration > 0 ? v / nav.duration : 0) }
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          text: Model.formatRemaining(nav.position, nav.duration)
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-
-        // Volume lives on the speaker glyph, not on a second slider: two
-        // adjacent sliders were ambiguous and squeezed the seek bar down to
-        // almost nothing. Scroll to change, click to mute.
-        Text {
-          id: volumeIcon
-          textFormat: Text.PlainText
-          text: nav.volume <= 0 ? "󰖁" : (nav.volume < 50 ? "󰕿" : "󰕾")
-          color: volumeArea.containsMouse ? root.foreground : root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-
-          MouseArea {
-            id: volumeArea
-            anchors.fill: parent
-            // A glyph is a tiny target; pad the hit area without moving it.
-            anchors.margins: -Style.space(4)
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onWheel: function(wheel) {
-              var step = wheel.angleDelta.y > 0 ? 5 : -5
-              nav.setVolume(Math.max(0, Math.min(100, Math.round(nav.volume) + step)))
-            }
-            onClicked: nav.toggleMute()
-
-            PanelToolTip {
-              visible: volumeArea.containsMouse
-              text: "Volume " + Math.round(nav.volume) + "%  ·  scroll to change, click to mute"
-            }
-          }
-        }
-      }
     }
 
     // Controls sit as a compact block to the right of the whole cover +
@@ -1436,6 +1378,70 @@ Panel {
           fontFamily: root.fontFamily
           enabled: !!(npBar.song && npBar.song.id)
           onClicked: nav.toggleFavorite(npBar.song)
+        }
+      }
+    }
+    }
+
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(6)
+
+      Text {
+        textFormat: Text.PlainText
+        text: Model.formatDuration(nav.position)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      PanelSlider {
+        id: seekSlider
+        bar: root.bar
+        Layout.fillWidth: true
+        minimum: 0
+        maximum: Math.max(1, nav.duration)
+        value: nav.position
+        onMoved: function(v) { seekSlider.liveValue = v }
+        onReleased: function(v) { nav.seekFraction(nav.duration > 0 ? v / nav.duration : 0) }
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: Model.formatRemaining(nav.position, nav.duration)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      // Volume lives on the speaker glyph, not on a second slider: two
+      // adjacent sliders were ambiguous and squeezed the seek bar down to
+      // almost nothing. Scroll to change, click to mute.
+      Text {
+        id: volumeIcon
+        textFormat: Text.PlainText
+        text: nav.volume <= 0 ? "󰖁" : (nav.volume < 50 ? "󰕿" : "󰕾")
+        color: volumeArea.containsMouse ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+
+        MouseArea {
+          id: volumeArea
+          anchors.fill: parent
+          // A glyph is a tiny target; pad the hit area without moving it.
+          anchors.margins: -Style.space(4)
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onWheel: function(wheel) {
+            var step = wheel.angleDelta.y > 0 ? 5 : -5
+            nav.setVolume(Math.max(0, Math.min(100, Math.round(nav.volume) + step)))
+          }
+          onClicked: nav.toggleMute()
+
+          PanelToolTip {
+            visible: volumeArea.containsMouse
+            text: "Volume " + Math.round(nav.volume) + "%  ·  scroll to change, click to mute"
+          }
         }
       }
     }
