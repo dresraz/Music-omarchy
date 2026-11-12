@@ -546,21 +546,40 @@ cmd_relogin() {
 # doesn't require a stable token; only Music's own client caches one to
 # avoid image flicker across re-renders, which doesn't apply to a one-shot
 # CLI call).
-build_url() {
+# Mints one authenticated URL. Assumes SERVER_URL/USERNAME/PASSWORD are already
+# loaded and the server URL has passed require_secure_url -- split out of
+# build_url so a batch (`urls`) pays the config read and keyring lookup once
+# instead of once per track, which for a 500-track queue meant 500 keyring
+# round-trips before mpv got a single URL.
+mint_url() {
   local endpoint="$1"; shift
-  require_active_profile
-  require_secure_url "$SERVER_URL" \
-    || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
   local salt token qs kv k v
   salt=$(head -c 16 /dev/urandom | md5sum | cut -c1-16)
   token=$(printf '%s' "${PASSWORD}${salt}" | md5sum | cut -d' ' -f1)
   qs="u=$(urlencode "$USERNAME")&t=${token}&s=${salt}&v=${API_VERSION}&c=${CLIENT_NAME}&f=json"
   for kv in "$@"; do
+    [[ "$kv" == *=* ]] || fail "bad parameter '$kv' (expected key=value)"
     k="${kv%%=*}"
     v="${kv#*=}"
     qs+="&$(urlencode "$k")=$(urlencode "$v")"
   done
   printf '%s/rest/%s?%s' "$SERVER_URL" "$endpoint" "$qs"
+}
+
+# Endpoints are interpolated into the request path, so only the shape the
+# Subsonic API actually uses is accepted: anything else (a path traversal, a
+# stray query string) would build a URL we never meant to fetch.
+require_endpoint() {
+  [[ "$1" =~ ^[A-Za-z0-9]+\.view$ ]] || fail "bad endpoint '$1' (expected <name>.view)"
+}
+
+build_url() {
+  local endpoint="$1"; shift
+  require_endpoint "$endpoint"
+  require_active_profile
+  require_secure_url "$SERVER_URL" \
+    || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
+  mint_url "$endpoint" "$@"
 }
 
 cmd_url() {
@@ -573,11 +592,15 @@ cmd_url() {
 # process instead of one music-api invocation per track: `urls
 # stream.view id1 id2 ...` prints one URL per line, same order as the ids.
 cmd_urls() {
-  local endpoint="$1"; shift
+  local endpoint="${1:-}"; shift || true
   [[ -n "$endpoint" && $# -gt 0 ]] || fail "usage: urls <endpoint> <id1> [id2 ...]"
+  require_endpoint "$endpoint"
+  require_active_profile
+  require_secure_url "$SERVER_URL" \
+    || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
   local id
   for id in "$@"; do
-    build_url "$endpoint" "id=$id" || exit 1
+    mint_url "$endpoint" "id=$id" || exit 1
     echo
   done
 }
@@ -652,7 +675,7 @@ cmd_cover() {
     # caps the actual bytes, then writes an O_CREAT|O_EXCL|O_NOFOLLOW temp in
     # the openat-verified cache dir and renameat()s it into place.
     curl_auth "$url" "$MAX_COVER_BYTES" --max-time 15 \
-      | fsafe write "$cache_base" "$rel" "$MAX_COVER_BYTES" \
+      | fsafe write "$cache_base" "$rel" "$MAX_COVER_BYTES" image \
       || fail "could not fetch cover art"
   fi
   printf '%s' "$path"

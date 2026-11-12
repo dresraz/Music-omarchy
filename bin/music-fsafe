@@ -30,6 +30,14 @@ import sys
 ABSENT = 3
 
 
+def is_image(data):
+    """True for the formats a Subsonic server actually returns for coverArt."""
+    return (data.startswith(b"\xff\xd8\xff")            # JPEG
+            or data.startswith(b"\x89PNG\r\n\x1a\n")    # PNG
+            or data[:4] == b"GIF8"                      # GIF
+            or (data[:4] == b"RIFF" and data[8:12] == b"WEBP"))
+
+
 def die(msg):
     sys.stderr.write("music-fsafe: %s\n" % msg)
     raise SystemExit(1)
@@ -230,6 +238,12 @@ def main(argv):
             # No caller writes an empty file; an empty body means the producer
             # (a failed curl, an aborted jq) fell over -- don't publish it.
             die("refusing to write %s: empty input" % argv[3])
+        # Optional 5th arg "image": a cover fetch that returns a Subsonic error
+        # document (HTTP 200, JSON body) is not art. Refusing to publish it
+        # stops one bad response from poisoning that cover in the cache for
+        # good, which is what happened when any non-empty body counted as a hit.
+        if len(argv) > 5 and argv[5] == "image" and not is_image(data):
+            die("refusing to write %s: response is not an image" % argv[3])
         base_fd = open_base(base, create=True)
         try:
             parent_fd = walk_dirs(base_fd, parent_parts, create=True, chmod_last=True)

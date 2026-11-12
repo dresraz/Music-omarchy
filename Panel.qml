@@ -102,6 +102,17 @@ Panel {
   property string formPass: ""
   property bool formAllowInsecure: false
 
+  // Two-step confirm for the destructive settings buttons: logging out throws
+  // the stored password away and removing destroys the profile. Cheaper and
+  // less intrusive than a modal — the button turns urgent, and the second
+  // click within a few seconds does it.
+  property string confirmAction: ""
+  Timer {
+    id: confirmReset
+    interval: 4000
+    onTriggered: root.confirmAction = ""
+  }
+
   // A plain http:// server needs an explicit opt-in -- unless it's loopback,
   // which the helper always allows. Mirrors the loopback list in music-api.
   readonly property bool formNeedsInsecureOptIn: {
@@ -602,7 +613,7 @@ Panel {
                 // against the Flickable's own viewport dimensions instead.
                 Text {
                   textFormat: Text.PlainText
-                  visible: nav.listLoading
+                  visible: nav.listLoading || nav.searchLoading
                   x: (panelFlick.width - implicitWidth) / 2
                   y: (panelFlick.height - implicitHeight) / 2
                   text: "Loading…"
@@ -611,13 +622,21 @@ Panel {
                   font.pixelSize: Style.font.body
                 }
 
+                // One line for both states: a failed fetch used to look exactly
+                // like an empty library ("Nothing here yet"), which hid every
+                // dead server and unreadable response behind a shrug.
                 Text {
                   textFormat: Text.PlainText
-                  visible: !nav.listLoading && nav.navigableRows.length === 0 && nav.rows.length === 0
-                  x: (panelFlick.width - implicitWidth) / 2
+                  visible: !nav.listLoading && !nav.searchLoading
+                           && nav.navigableRows.length === 0 && nav.rows.length === 0
+                  x: Style.space(16)
+                  width: panelFlick.width - Style.space(32)
                   y: (panelFlick.height - implicitHeight) / 2
-                  text: nav.searchActive ? "No results" : "Nothing here yet"
-                  color: root.dim
+                  text: nav.listError !== "" ? nav.listError
+                        : (nav.searchActive ? "No results" : "Nothing here yet")
+                  color: nav.listError !== "" ? root.urgent : root.dim
+                  horizontalAlignment: Text.AlignHCenter
+                  wrapMode: Text.WordWrap
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
@@ -637,7 +656,8 @@ Panel {
                       id: rowLoader
                       required property var modelData
                       width: listColumn.width
-                      sourceComponent: modelData.type === "header" ? headerRowComp : itemRowComp
+                      sourceComponent: modelData.type === "header" ? headerRowComp
+                                     : (modelData.type === "more" ? moreRowComp : itemRowComp)
                       // A *live* binding, not a one-time snapshot: onLoaded only
                       // fires the first time this delegate loads, but Repeater
                       // can reuse the same delegate for a different row later
@@ -658,6 +678,7 @@ Panel {
 
                 Component { id: headerRowComp; HeaderRow {} }
                 Component { id: itemRowComp; ItemRow {} }
+                Component { id: moreRowComp; MoreRow {} }
               }
             }
           }
@@ -839,19 +860,27 @@ Panel {
       PanelActionButton {
         visible: !profileRow.needsSignIn
         iconText: "󰍃"
-        tooltipText: "Log out"
-        foreground: root.foreground
+        tooltipText: root.confirmAction === "logout:" + profileRow.profile.id ? "Click again to log out" : "Log out"
+        foreground: root.confirmAction === "logout:" + profileRow.profile.id ? root.urgent : root.foreground
         hoverColor: root.urgent
         fontFamily: root.fontFamily
-        onClicked: nav.logoutProfile(profileRow.profile.id)
+        onClicked: {
+          var key = "logout:" + profileRow.profile.id
+          if (root.confirmAction === key) { root.confirmAction = ""; nav.logoutProfile(profileRow.profile.id) }
+          else { root.confirmAction = key; confirmReset.restart() }
+        }
       }
       PanelActionButton {
         iconText: "󰆴"
-        tooltipText: "Remove this server"
-        foreground: root.foreground
+        tooltipText: root.confirmAction === "forget:" + profileRow.profile.id ? "Click again to remove this server" : "Remove this server"
+        foreground: root.confirmAction === "forget:" + profileRow.profile.id ? root.urgent : root.foreground
         hoverColor: root.urgent
         fontFamily: root.fontFamily
-        onClicked: nav.forgetProfile(profileRow.profile.id)
+        onClicked: {
+          var key = "forget:" + profileRow.profile.id
+          if (root.confirmAction === key) { root.confirmAction = ""; nav.forgetProfile(profileRow.profile.id) }
+          else { root.confirmAction = key; confirmReset.restart() }
+        }
       }
     }
 
@@ -909,6 +938,33 @@ Panel {
     width: parent ? parent.width : implicitWidth
   }
 
+  // The tail of a paged list: clicking (or Enter on) it appends the next page.
+  component MoreRow: CursorSurface {
+    id: moreRow
+    property var rowData: null
+    readonly property bool isCursor: nav.cursorActive && nav.focusSection === "list"
+                                  && nav.listIndex === nav.navigableRows.length - 1
+    width: parent ? parent.width : implicitWidth
+    implicitHeight: Style.space(30)
+    hasCursor: isCursor
+    foreground: root.foreground
+
+    Text {
+      textFormat: Text.PlainText
+      anchors.centerIn: parent
+      text: nav.albumsLoading ? "Loading…" : "Load more"
+      color: moreRow.hasCursor ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: nav.loadMoreAlbums()
+    }
+  }
+
   component ItemRow: CursorSurface {
     id: itemRow
     property var rowData: null
@@ -921,12 +977,8 @@ Panel {
     // Comparing the actual id sidesteps whatever that mechanism is.
     readonly property int navIndex: {
       if (!rowData || !rowData.data) return -1
-      var id = rowData.data.id
-      var list = nav.navigableRows
-      for (var i = 0; i < list.length; i++) {
-        if (list[i] && list[i].data && list[i].data.id === id) return i
-      }
-      return -1
+      var i = nav.rowNavIndex[rowData.data.id]
+      return i === undefined ? -1 : i
     }
     readonly property var item: rowData ? rowData.data : null
     readonly property string kind: rowData ? rowData.type : ""

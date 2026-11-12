@@ -101,6 +101,19 @@ Item {
   readonly property bool searchActive: searchQuery.trim() !== ""
   property var searchResults: ({ artists: [], albums: [], songs: [] })
 
+  // Surfaced in the list area by the panel. Previously a failed fetch or a
+  // broken response was indistinguishable from an empty library: the list
+  // just said "Nothing here yet".
+  property string listError: ""
+  property bool searchLoading: false
+
+  // Newest-albums paging. The endpoint takes an offset; without one the tab
+  // stopped dead at 60 albums and everything older was unreachable.
+  property int albumPageSize: 60
+  property int albumsOffset: 0
+  property bool albumsHasMore: false
+  property bool albumsLoading: false
+
   // Drill stack: each frame is { kind: "artistAlbums"|"albumSongs"|"playlistSongs", id, title, items, loading }
   property var stack: []
   readonly property var topFrame: stack.length > 0 ? stack[stack.length - 1] : null
@@ -131,8 +144,16 @@ Item {
   // collapsing on one screen collapses the same logical panel everywhere.
   property bool browseCollapsed: false
 
+  // Bumped whenever the browse context changes (a frame pushed or popped, a
+  // tab switched, the whole state reset). Every async drill-down captures it
+  // and drops its result if it no longer matches, so a response that lands
+  // after you navigated away can't push a frame you already left.
+  property int _frameGen: 0
+
   function switchTab(tab) {
+    _frameGen++
     activeTab = tab
+    tabIndex = Math.max(0, tabOrder.indexOf(tab))
     stack = []
     ensureTabLoaded(tab)
     setListCursor(0)
@@ -142,12 +163,17 @@ Item {
   // switching (or connecting to a different) server must not leave the
   // previous server's albums/artists/playlists sitting in view.
   function resetBrowseState() {
+    _frameGen++
     stack = []
     loadedTabs = {}
     tabAlbums = []
     tabArtists = []
     tabPlaylists = []
     tabFavorites = { artists: [], albums: [], songs: [] }
+    albumsOffset = 0
+    albumsHasMore = false
+    albumsLoading = false
+    listError = ""
     searchQuery = ""
     searchResults = { artists: [], albums: [], songs: [] }
   }
@@ -158,28 +184,74 @@ Item {
     for (var k in loadedTabs) next[k] = loadedTabs[k]
     next[tab] = true
     loadedTabs = next
-    if (tab === "albums") fetchAlbums("newest", function(rows) { tabAlbums = rows })
-    else if (tab === "artists") fetchArtists(function(rows) { tabArtists = rows })
-    else if (tab === "playlists") fetchPlaylists(function(rows) { tabPlaylists = rows })
-    else if (tab === "favorites") fetchFavorites(function(rows) { tabFavorites = rows })
+    listError = ""
+    if (tab === "albums") {
+      albumsOffset = 0
+      albumsHasMore = false
+      fetchAlbums("newest", 0, function(rows, err) {
+        if (err) { listError = err; rows = [] }
+        tabAlbums = rows
+        albumsOffset = rows.length
+        albumsHasMore = rows.length >= albumPageSize
+      })
+    }
+    else if (tab === "artists") fetchArtists(function(rows, err) { if (err) listError = err; tabArtists = rows })
+    else if (tab === "playlists") fetchPlaylists(function(rows, err) { if (err) listError = err; tabPlaylists = rows })
+    else if (tab === "favorites") fetchFavorites(function(rows, err) { if (err) listError = err; tabFavorites = rows })
+  }
+
+  // Appends the next page of the newest-albums list. The server has thousands
+  // of albums and the endpoint is paged, so the tab used to stop dead at 60
+  // with no way to reach anything older.
+  function loadMoreAlbums() {
+    if (!albumsHasMore || albumsLoading) return
+    var gen = _frameGen
+    listError = ""
+    albumsLoading = true
+    fetchAlbums("newest", albumsOffset, function(rows, err) {
+      albumsLoading = false
+      if (gen !== _frameGen) return
+      if (err) { listError = err; return }
+      albumsOffset += rows.length
+      albumsHasMore = rows.length >= albumPageSize
+      tabAlbums = tabAlbums.concat(rows)
+    })
   }
 
   function pushArtist(artist) {
+    var gen = ++_frameGen
+    listError = ""
     stack = stack.concat([{ kind: "artistAlbums", id: artist.id, title: artist.name, items: [], loading: true }])
     setListCursor(0)
-    fetchArtistAlbums(artist.id, function(rows) { replaceTopFrame("artistAlbums", artist.id, artist.name, rows) })
+    fetchArtistAlbums(artist.id, function(rows, err) {
+      if (gen !== _frameGen) return
+      if (err) { listError = err; rows = [] }
+      replaceTopFrame("artistAlbums", artist.id, artist.name, rows)
+    })
   }
 
   function pushAlbum(album) {
+    var gen = ++_frameGen
+    listError = ""
     stack = stack.concat([{ kind: "albumSongs", id: album.id, title: album.name, items: [], loading: true }])
     setListCursor(0)
-    fetchAlbumSongs(album.id, function(rows) { replaceTopFrame("albumSongs", album.id, album.name, rows) })
+    fetchAlbumSongs(album.id, function(rows, err) {
+      if (gen !== _frameGen) return
+      if (err) { listError = err; rows = [] }
+      replaceTopFrame("albumSongs", album.id, album.name, rows)
+    })
   }
 
   function pushPlaylist(playlist) {
+    var gen = ++_frameGen
+    listError = ""
     stack = stack.concat([{ kind: "playlistSongs", id: playlist.id, title: playlist.name, items: [], loading: true }])
     setListCursor(0)
-    fetchPlaylistSongs(playlist.id, function(rows) { replaceTopFrame("playlistSongs", playlist.id, playlist.name, rows) })
+    fetchPlaylistSongs(playlist.id, function(rows, err) {
+      if (gen !== _frameGen) return
+      if (err) { listError = err; rows = [] }
+      replaceTopFrame("playlistSongs", playlist.id, playlist.name, rows)
+    })
   }
 
   function replaceTopFrame(kind, id, title, items) {
@@ -190,12 +262,20 @@ Item {
 
   // Re-fetches whatever the current frame (or top-level tab) is showing.
   function refetchFrame(frame) {
-    if (frame.kind === "artistAlbums") fetchArtistAlbums(frame.id, function(rows) { replaceTopFrame(frame.kind, frame.id, frame.title, rows) })
-    else if (frame.kind === "albumSongs") fetchAlbumSongs(frame.id, function(rows) { replaceTopFrame(frame.kind, frame.id, frame.title, rows) })
-    else if (frame.kind === "playlistSongs") fetchPlaylistSongs(frame.id, function(rows) { replaceTopFrame(frame.kind, frame.id, frame.title, rows) })
+    var gen = _frameGen
+    listError = ""
+    function done(rows, err) {
+      if (gen !== _frameGen) return
+      if (err) { listError = err; rows = [] }
+      replaceTopFrame(frame.kind, frame.id, frame.title, rows)
+    }
+    if (frame.kind === "artistAlbums") fetchArtistAlbums(frame.id, done)
+    else if (frame.kind === "albumSongs") fetchAlbumSongs(frame.id, done)
+    else if (frame.kind === "playlistSongs") fetchPlaylistSongs(frame.id, done)
   }
 
   function popFrame() {
+    _frameGen++
     stack = stack.slice(0, -1)
     setListCursor(0)
   }
@@ -233,13 +313,29 @@ Item {
                           : { type: kind, data: it }
       })
     }
-    if (root.activeTab === "albums") return root.tabAlbums.map(function(a) { return { type: "album", data: a } })
+    if (root.activeTab === "albums") {
+      var albums = root.tabAlbums.map(function(a) { return { type: "album", data: a } })
+      if (root.albumsHasMore) albums.push({ type: "more" })
+      return albums
+    }
     if (root.activeTab === "artists") return root.tabArtists.map(function(a) { return { type: "artist", data: a } })
     if (root.activeTab === "playlists") return root.tabPlaylists.map(function(p) { return { type: "playlist", data: p } })
     if (root.activeTab === "favorites") return root.combinedRows(root.tabFavorites)
     return []
   }
   property var navigableRows: rows.filter(function(r) { return r.type !== "header" })
+  // id -> position in navigableRows, built once per list change. Each row used
+  // to scan the entire list to find itself, which is O(n²) on a long playlist
+  // and re-ran on every cursor move.
+  readonly property var rowNavIndex: {
+    var m = {}
+    var list = navigableRows
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i]
+      if (r && r.data && r.data.id !== undefined && m[r.data.id] === undefined) m[r.data.id] = i
+    }
+    return m
+  }
   readonly property bool listLoading: root.searchActive ? false : (root.topFrame ? root.topFrame.loading : false)
   readonly property string listTitle: root.searchActive ? "Search results" : (root.topFrame ? root.topFrame.title : "")
 
@@ -261,6 +357,7 @@ Item {
     if (row.type === "artist") pushArtist(row.data)
     else if (row.type === "album") pushAlbum(row.data)
     else if (row.type === "playlist") pushPlaylist(row.data)
+    else if (row.type === "more") loadMoreAlbums()
     else if (row.type === "song") {
       var songs = songListForRow(row)
       // By id, not indexOf(row.data) — object-reference equality here is
@@ -346,6 +443,7 @@ Item {
   function activateCursor() {
     keyboardActive = true
     if (focusSection === "list") activateRow(navigableRows[listIndex])
+    else if (focusSection === "tabs") switchTab(tabOrder[tabIndex] || tabOrder[0])
     else if (focusSection === "nowplaying") togglePause()
   }
 
@@ -473,9 +571,17 @@ Item {
   function copyProfilePassword(profileId) {
     var args = [apiBin, "copy-password"]
     if (profileId) args.push(String(profileId))
-    Quickshell.execDetached(args)
-    Quickshell.execDetached(["notify-send", "-a", "Music", "-t", "4000",
-      "Password copied to clipboard", "Paste it into the server's sign-in form."])
+    _run(copyPwProcess, args, function(ok) {
+      // Exit status matters: this used to fire-and-forget and always claim
+      // success, so a missing wl-copy still toasted "Password copied".
+      if (ok) {
+        Quickshell.execDetached(["notify-send", "-a", "Music", "-t", "4000",
+          "Password copied to clipboard", "Paste it into the server's sign-in form."])
+      } else {
+        Quickshell.execDetached(["notify-send", "-a", "Music", "-t", "4000",
+          "Could not copy the password", "Is wl-clipboard installed?"])
+      }
+    })
   }
 
   // --- browsing ------------------------------------------------------------
@@ -491,8 +597,9 @@ Item {
     _apiGet(["getArtist.view", "id=" + artistId], function(body, err) { callback(err ? [] : Model.extractAlbums(body), err) })
   }
 
-  function fetchAlbums(type, callback) {
-    _apiGet(["getAlbumList2.view", "type=" + type, "size=60"], function(body, err) { callback(err ? [] : Model.extractAlbums(body), err) })
+  function fetchAlbums(type, offset, callback) {
+    _apiGet(["getAlbumList2.view", "type=" + type, "size=" + albumPageSize, "offset=" + (offset || 0)],
+            function(body, err) { callback(err ? [] : Model.extractAlbums(body), err) })
   }
 
   function fetchAlbumSongs(albumId, callback) {
@@ -512,8 +619,18 @@ Item {
   }
 
   function search(query, callback) {
-    if (String(query || "").trim() === "") { callback({ artists: [], albums: [], songs: [] }, ""); return }
-    _apiGet(["search3.view", "query=" + query], function(body, err) { callback(err ? { artists: [], albums: [], songs: [] } : Model.extractSearch(body), err) })
+    if (String(query || "").trim() === "") {
+      searchLoading = false
+      callback({ artists: [], albums: [], songs: [] }, "")
+      return
+    }
+    listError = ""
+    searchLoading = true
+    _apiGet(["search3.view", "query=" + query], function(body, err) {
+      searchLoading = false
+      if (err) listError = err
+      callback(err ? { artists: [], albums: [], songs: [] } : Model.extractSearch(body), err)
+    })
   }
 
   function toggleFavorite(item) {
@@ -638,9 +755,10 @@ Item {
       _runWithSecret(playQueueProcess,
                      [playerBin, "load-queue", String(startIndex), String(urls.length)],
                      _queuePayload(songs, urls),
-                     function() {
+                     function(ok, qErr) {
         if (gen !== _playGen) return
         loading = false
+        if (!ok) { lastError = qErr || "could not load the queue"; return }
         paused = false
         playing = true
         pollTimer.restart()
@@ -678,6 +796,9 @@ Item {
     if (queueIndex < 0 || queue.length === 0) return
     var currentSong = queue[queueIndex]
     var newQueue, newIndex
+    // Captured so a failed reorder can put the queue and the toggle back
+    // instead of leaving the UI describing a shuffle mpv never applied.
+    var prev = { queue: queue, index: queueIndex, shuffle: shuffleEnabled, unshuffled: _unshuffledQueue }
 
     if (!shuffleEnabled) {
       _unshuffledQueue = queue.slice()
@@ -702,7 +823,7 @@ Item {
       _unshuffledQueue = null
       shuffleEnabled = false
     }
-    _reorderTail(newQueue, newIndex)
+    _reorderTail(newQueue, newIndex, prev)
   }
 
   // Rewrites just the not-yet-played tail of mpv's own playlist to match a
@@ -715,24 +836,37 @@ Item {
   // music-player's reorder-tail instead strips whatever mpv's playlist
   // has after its own current position and appends the new tail fresh, so
   // mpv never issues a loadfile for the entry it's already playing.
-  function _reorderTail(newQueue, newIndex) {
+  function _reorderTail(newQueue, newIndex, prev) {
     var gen = ++_playGen
     queue = newQueue
     queueIndex = newIndex
     var tail = newQueue.slice(newIndex + 1)
     if (tail.length === 0) return
     loading = true
+    // Put the queue and the shuffle toggle back if the reorder never lands;
+    // otherwise the panel would describe a queue mpv does not have.
+    function rollback(msg) {
+      if (prev) {
+        queue = prev.queue
+        queueIndex = prev.index
+        shuffleEnabled = prev.shuffle
+        _unshuffledQueue = prev.unshuffled
+      }
+      lastError = msg
+      loading = false
+    }
     var ids = tail.map(function(s) { return s.id })
     _run(loadProcess, [apiBin, "urls", "stream.view"].concat(ids), function(urlsOut, err) {
       if (gen !== _playGen) return
-      if (err || !urlsOut) { lastError = err || "could not build stream URLs"; loading = false; return }
+      if (err || !urlsOut) { rollback(err || "could not build stream URLs"); return }
       var urls = String(urlsOut).split("\n").map(function(u) { return u.trim() }).filter(function(u) { return u !== "" })
-      if (urls.length === 0) { lastError = "could not build stream URLs"; loading = false; return }
+      if (urls.length === 0) { rollback("could not build stream URLs"); return }
       _runWithSecret(playQueueProcess,
                      [playerBin, "reorder-tail", String(urls.length)],
                      _queuePayload(tail, urls),
-                     function() {
+                     function(ok, qErr) {
         if (gen !== _playGen) return
+        if (!ok) { rollback(qErr || "could not reorder the queue"); return }
         loading = false
       })
     })
@@ -808,7 +942,12 @@ Item {
       try { data = JSON.parse(pollOut.text) } catch (e) { return }
       if (!data) return
       root.paused = data.paused === true
-      root.playing = data.running === true && data.paused !== true
+      // mpv reports running:true even when it is sitting idle; after the last
+      // track that left the bar pill lit and Now Playing stuck on a finished
+      // song. idle/eof mean nothing is actually playing.
+      var idle = data.idle === true || data.eof === true
+      if (idle) root.paused = true
+      root.playing = !idle && data.running === true && data.paused !== true
       root.position = Number(data.position) || 0
       root.duration = Number(data.duration) || 0
       if (data.volume !== undefined) root.volume = Math.round(Number(data.volume))
@@ -869,7 +1008,16 @@ Item {
           Qt.callLater(root._drainApiQueue)
           return
         }
-        try { data = JSON.parse(apiOut.text) } catch (e) { /* leave null */ }
+        try { data = JSON.parse(apiOut.text) } catch (e) {
+          // A non-JSON body used to fall through as `null` with no error, so
+          // every caller rendered an empty list and the panel looked like an
+          // empty library instead of a broken response.
+          var bad = "could not read the server's response"
+          root.lastError = bad
+          if (cb) cb(null, bad)
+          Qt.callLater(root._drainApiQueue)
+          return
+        }
         if (cb) cb(data, "")
       } else {
         var msg = String(apiErr.text || "request failed").replace(/^music-api:\s*/, "").trim()
@@ -901,13 +1049,15 @@ Item {
     stdout: StdioCollector { id: coverOut; waitForEnd: true }
     onExited: function(exitCode) {
       root._coverBusy = false
-      if (exitCode === 0) {
-        var path = String(coverOut.text || "").trim()
-        var next = {}
-        for (var k in root.coverCache) next[k] = root.coverCache[k]
-        next[coverProcess._key] = path
-        root.coverCache = next
-      }
+      var path = exitCode === 0 ? String(coverOut.text || "").trim() : ""
+      var next = {}
+      for (var k in root.coverCache) next[k] = root.coverCache[k]
+      if (path !== "") next[coverProcess._key] = path
+      // No path means the fetch failed. Drop the key instead of caching the
+      // failure: requestCover() skips any key that already exists, so leaving
+      // an empty string here made that cover permanently unfetchable.
+      else delete next[coverProcess._key]
+      root.coverCache = next
       Qt.callLater(root._drainCoverQueue)
     }
   }
@@ -916,17 +1066,35 @@ Item {
 
   // Runs a one-shot Process, stashing `callback` on it so the Process's own
   // onExited handler (each parses its stdout differently — JSON body, raw
-  // URL string, or nothing at all) can hand back its result. If `proc` is
-  // still busy with a previous call, this one is dropped rather than
-  // clobbering the in-flight call's command/callback (several of these
-  // Processes — playerCtlProcess especially — are shared across multiple
-  // user actions that can fire in quick succession, like spamming play/pause).
+  // URL string, or nothing at all) can hand back its result.
+  //
+  // If `proc` is already busy, the call is parked in a single pending slot
+  // (a newer call supersedes an older parked one) and dispatched when the
+  // in-flight call exits. It used to be dropped outright, which silently lost
+  // transport commands and — worse — left callers that had already set
+  // `loading = true` waiting on a callback that would never run, freezing the
+  // panel's status poll for good.
   function _run(proc, command, callback) {
-    if (proc.running) return false
+    if (proc.running) {
+      proc._pending = { command: command, callback: callback, secret: null }
+      return false
+    }
     proc._cb = callback
     proc.command = command
     proc.running = true
     return true
+  }
+
+  // Dispatches whatever was parked by _run while `proc` was busy. Called at
+  // the end of every Process's onExited.
+  function _drainPending(proc) {
+    var next = proc._pending
+    proc._pending = null
+    if (!next) return
+    proc._cb = next.callback
+    if (next.secret !== null) proc._secret = next.secret
+    proc.command = next.command
+    proc.running = true
   }
 
   // Like _run, but stashes a payload for the Process to write to the child's
@@ -936,12 +1104,28 @@ Item {
   // load-queue/reorder-tail) — those URLs carry the Subsonic salt+token,
   // which is a replayable credential.
   function _runWithSecret(proc, command, secret, callback) {
-    if (proc.running) return false
+    if (proc.running) {
+      proc._pending = { command: command, callback: callback, secret: secret }
+      return false
+    }
     proc._cb = callback
     proc._secret = secret
     proc.command = command
     proc.running = true
     return true
+  }
+
+  Process {
+    id: copyPwProcess
+    property var _cb: null
+    running: false
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      var cb = copyPwProcess._cb; copyPwProcess._cb = null
+      if (cb) cb(exitCode === 0)
+      root._drainPending(copyPwProcess)
+    }
   }
 
   Process {
@@ -953,8 +1137,13 @@ Item {
     onExited: function(exitCode) {
       var cb = statusProcess._cb; statusProcess._cb = null
       var data = null
-      try { data = JSON.parse(statusOut.text) } catch (e) {}
-      if (cb) cb(data, exitCode === 0 ? "" : String(statusErr.text || "").trim())
+      var err = exitCode === 0 ? "" : String(statusErr.text || "").trim()
+      if (exitCode === 0) {
+        try { data = JSON.parse(statusOut.text) } catch (e) { err = "could not read the server's response" }
+        if (!data && !err) err = "could not read the server's response"
+      }
+      if (cb) cb(data, err)
+      root._drainPending(statusProcess)
     }
   }
 
@@ -982,11 +1171,13 @@ Item {
       var cb = configureProcess._cb; configureProcess._cb = null
       if (exitCode !== 0) {
         if (cb) cb(null, String(configureErr.text || "").replace(/^music-api:\s*/, "").trim())
+        root._drainPending(configureProcess)
         return
       }
       var data = null
       try { data = JSON.parse(configureOut.text) } catch (e) {}
       if (cb) cb(data, "")
+      root._drainPending(configureProcess)
     }
   }
 
@@ -1000,11 +1191,13 @@ Item {
       var cb = forgetProcess._cb; forgetProcess._cb = null
       if (exitCode !== 0) {
         if (cb) cb(null, String(forgetErr.text || "").replace(/^music-api:\s*/, "").trim())
+        root._drainPending(forgetProcess)
         return
       }
       var data = null
       try { data = JSON.parse(forgetOut.text) } catch (e) {}
       if (cb) cb(data, "")
+      root._drainPending(forgetProcess)
     }
   }
 
@@ -1018,9 +1211,11 @@ Item {
       var cb = loadProcess._cb; loadProcess._cb = null
       if (exitCode === 0 && root._overSized(loadOut.text)) {
         if (cb) cb("", "stream URL list too large")
+        root._drainPending(loadProcess)
         return
       }
       if (cb) cb(exitCode === 0 ? loadOut.text : "", exitCode === 0 ? "" : String(loadErr.text || "").trim())
+      root._drainPending(loadProcess)
     }
   }
 
@@ -1031,7 +1226,8 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
       var cb = playerCtlProcess._cb; playerCtlProcess._cb = null
-      if (cb) cb()
+      if (cb) cb(exitCode === 0)
+      root._drainPending(playerCtlProcess)
     }
   }
 
@@ -1047,6 +1243,7 @@ Item {
     stdinEnabled: true
     running: false
     stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { id: playQueueErr; waitForEnd: true }
     onStarted: {
       if (playQueueProcess._secret !== "") {
         playQueueProcess.write(playQueueProcess._secret + "\n")
@@ -1056,7 +1253,9 @@ Item {
     onExited: function(exitCode) {
       playQueueProcess._secret = ""
       var cb = playQueueProcess._cb; playQueueProcess._cb = null
-      if (cb) cb()
+      var err = exitCode === 0 ? "" : String(playQueueErr.text || "").replace(/^music-player:\s*/, "").trim()
+      if (cb) cb(exitCode === 0, err)
+      root._drainPending(playQueueProcess)
     }
   }
 

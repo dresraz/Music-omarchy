@@ -112,7 +112,7 @@ ensure_mpv() {
   # Socket is dead or gone: reap any orphan mpv still bound to this path
   # (from a crash or a pre-lock race) so a clean single instance replaces
   # them. Safe here precisely because is_running just failed.
-  pkill -f -- "--input-ipc-server=$SOCK" 2>/dev/null || true
+  pkill -f -- "^mpv .*--input-ipc-server=$SOCK" 2>/dev/null || true
   rm -f "$SOCK"
   harden_log
   local args=(--idle=yes --no-video --no-terminal --no-config
@@ -192,6 +192,9 @@ cmd_load_queue() {
   local start="$1" count="${2:-}"
   [[ "$start" =~ ^[0-9]+$ && "$count" =~ ^[0-9]+$ && "$count" -ge 1 ]] \
     || fail "usage: load-queue <startIndex> <count>   (<count> url/title lines on stdin)"
+  # A start past the end would leave playlist-pos pointing at nothing, which
+  # mpv silently ignores -- the queue loads but starts from entry 0 instead.
+  (( 10#$start < 10#$count )) || fail "load-queue: start index $start is outside the $count-track queue"
   read_queue_stdin "$count"
   ensure_mpv || fail "mpv failed to start (see $LOG)"
   local cmds="{\"command\":[\"playlist-clear\"]}"
@@ -213,11 +216,13 @@ cmd_load_queue() {
       cmds+=$'\n'"{\"command\":[\"loadfile\",$u,\"$mode\"]}"
     fi
   done
-  cmds+=$'\n''{"command":["set_property","pause",false]}'
+  # Jump to the chosen entry *before* unpausing: mpv processes these in order,
+  # so unpausing first audibly starts entry 0 for a beat before the seek lands.
   if [[ "$start" =~ ^[0-9]+$ ]] && [[ "$start" -gt 0 ]]; then
     cmds+=$'\n'"{\"command\":[\"set_property\",\"playlist-pos\",$start]}"
   fi
-  ipc_send "$cmds" >/dev/null
+  cmds+=$'\n''{"command":["set_property","pause",false]}'
+  ipc_send "$cmds" >/dev/null || fail "load-queue: mpv did not accept the queue"
   echo '{"ok":true}'
 }
 
@@ -259,14 +264,16 @@ cmd_reorder_tail() {
       cmds+="{\"command\":[\"loadfile\",$u,\"append\"]}"$'\n'
     fi
   done
-  [[ -n "$cmds" ]] && ipc_send "$cmds" >/dev/null
+  if [[ -n "$cmds" ]]; then
+    ipc_send "$cmds" >/dev/null || fail "reorder-tail: mpv did not accept the new tail"
+  fi
   echo '{"ok":true}'
 }
 
 cmd_simple() {
   # $1 = human command name (for errors), $2 = the JSON command to send
   is_running || fail "$1: mpv is not running"
-  ipc_send "$2" >/dev/null
+  ipc_send "$2" >/dev/null || fail "$1: mpv did not accept the command"
   echo '{"ok":true}'
 }
 
@@ -281,7 +288,9 @@ cmd_seek() {
 
 cmd_volume() {
   local vol="${1:-100}"
-  { [[ "$vol" =~ ^[0-9]+$ ]] && (( vol <= 100 )); } || fail "usage: volume <0-100>"
+  # 10# so a leading zero isn't read as octal (08 would otherwise abort the
+  # arithmetic and reject a perfectly valid volume).
+  { [[ "$vol" =~ ^[0-9]+$ ]] && (( 10#$vol <= 100 )); } || fail "usage: volume <0-100>"
   cmd_simple "volume" "{\"command\":[\"set_property\",\"volume\",$vol]}"
 }
 
@@ -293,12 +302,14 @@ cmd_volume() {
 cmd_set_repeat() {
   local mode="$1"
   is_running || fail "set-repeat: mpv is not running"
+  local cmds
   case "$mode" in
-    off) ipc_send $'{"command":["set_property","loop-playlist","no"]}\n{"command":["set_property","loop-file","no"]}' >/dev/null ;;
-    all) ipc_send $'{"command":["set_property","loop-playlist","inf"]}\n{"command":["set_property","loop-file","no"]}' >/dev/null ;;
-    one) ipc_send $'{"command":["set_property","loop-playlist","no"]}\n{"command":["set_property","loop-file","inf"]}' >/dev/null ;;
+    off) cmds=$'{"command":["set_property","loop-playlist","no"]}\n{"command":["set_property","loop-file","no"]}' ;;
+    all) cmds=$'{"command":["set_property","loop-playlist","inf"]}\n{"command":["set_property","loop-file","no"]}' ;;
+    one) cmds=$'{"command":["set_property","loop-playlist","no"]}\n{"command":["set_property","loop-file","inf"]}' ;;
     *) fail "usage: set-repeat <off|all|one>" ;;
   esac
+  ipc_send "$cmds" >/dev/null || fail "set-repeat: mpv did not accept the command"
   echo '{"ok":true}'
 }
 
@@ -325,6 +336,9 @@ cmd_status() {
   # as absent (same as null), which would silently turn a real "not paused"
   # / "not idle" reading back into true. `orDefault` only fills in for an
   # actual null.
+  # The `path` field is deliberately blank: mpv reports the authenticated
+  # stream URL there, and echoing it would put a replayable token into the QML
+  # side and any log that captures it. Nothing reads the field.
   jq -cs '
     def orDefault(d): if . == null then d else . end;
     {
@@ -335,7 +349,7 @@ cmd_status() {
       idle:     (.[3].data | orDefault(true)),
       eof:      (.[4].data | orDefault(false)),
       volume:   (.[5].data | orDefault(100)),
-      path:     (.[6].data | orDefault("")),
+      path:     "",
       playlistPos:   (.[7].data | orDefault(-1)),
       playlistCount: (.[8].data | orDefault(0)),
       audioCodec:    (.[9].data | orDefault("")),
@@ -345,7 +359,8 @@ cmd_status() {
 
 cmd_stop() {
   is_running || { echo '{"ok":true}'; return 0; }
-  ipc_send $'{"command":["stop"]}\n{"command":["playlist-clear"]}' >/dev/null
+  ipc_send $'{"command":["stop"]}\n{"command":["playlist-clear"]}' >/dev/null \
+    || fail "stop: mpv did not accept the command"
   echo '{"ok":true}'
 }
 
