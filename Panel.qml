@@ -100,14 +100,29 @@ Panel {
   property string formServer: ""
   property string formUser: ""
   property string formPass: ""
+  property bool formAllowInsecure: false
+
+  // A plain http:// server needs an explicit opt-in -- unless it's loopback,
+  // which the helper always allows. Mirrors the loopback list in dromify-api.
+  readonly property bool formNeedsInsecureOptIn: {
+    var s = String(formServer).trim().toLowerCase()
+    if (s.indexOf("http://") !== 0) return false
+    var rest = s.substring(7).replace(/^.*@/, "")
+    var host = rest.split("/")[0]
+    if (host.indexOf("[") === 0) host = host.substring(0, host.indexOf("]") + 1)
+    else if (host.indexOf("::1") === 0) host = "::1"
+    else if (host.indexOf(":") > 0) host = host.substring(0, host.indexOf(":"))
+    return host !== "localhost" && host !== "127.0.0.1" && host !== "::1" && host !== "[::1]"
+  }
 
   function submitConnect() {
-    nav.configure(formName, formServer, formUser, formPass, function(ok, err) {
+    nav.configure(formName, formServer, formUser, formPass, formAllowInsecure, function(ok, err) {
       if (ok) {
         formName = ""
         formServer = ""
         formUser = ""
         formPass = ""
+        formAllowInsecure = false
         nav.addingServer = false
         nav.showSettings = false
         nav.resetBrowseState()
@@ -377,6 +392,16 @@ Panel {
               Keys.onReturnPressed: root.submitConnect()
             }
 
+            Toggle {
+              visible: root.formNeedsInsecureOptIn
+              label: "Allow plain http"
+              description: "Only for a server on your own network. The access key travels unencrypted, so never enable this for a server reachable from the internet."
+              checked: root.formAllowInsecure
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.formAllowInsecure = !root.formAllowInsecure
+            }
+
             Text {
               textFormat: Text.PlainText
               visible: nav.lastError !== ""
@@ -391,6 +416,7 @@ Panel {
             Button {
               text: nav.connecting ? "Connecting…" : "Connect"
               enabled: !nav.connecting && root.formName !== "" && root.formServer !== "" && root.formUser !== "" && root.formPass !== ""
+                       && (!root.formNeedsInsecureOptIn || root.formAllowInsecure)
               Layout.fillWidth: true
               onClicked: root.submitConnect()
             }
@@ -756,6 +782,25 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
+        }
+      }
+
+      // A profile talking to a cleartext server must never look like a normal
+      // one: the badge is the standing reminder that its key is on the wire.
+      Rectangle {
+        visible: profileRow.profile.allowInsecure === true
+        radius: Style.space(3)
+        color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.15)
+        implicitWidth: httpBadge.implicitWidth + Style.space(10)
+        implicitHeight: httpBadge.implicitHeight + Style.space(4)
+        Layout.alignment: Qt.AlignVCenter
+        Text {
+          id: httpBadge
+          anchors.centerIn: parent
+          text: "http"
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
         }
       }
 

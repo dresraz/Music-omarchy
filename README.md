@@ -92,15 +92,34 @@ click next.
 back. `/` searches, `f` favourites, `r` refreshes. Hardware media keys and
 `playerctl` work too.
 
-## Server URL: use HTTPS
+## Server URL: HTTPS, or plain http on your own network
 
 The Subsonic auth scheme sends a salted token (`t`/`s`) with every request.
 It's replayable, and the salt is right there for an offline crack of the
 password, so it must not travel a network in the clear. Dromify therefore
-**requires `https://`** for the server URL. The one exception is a **loopback**
-address — `http://127.0.0.1[:port]` / `http://localhost[:port]` /
-`http://[::1][:port]` — for Navidrome running on the same machine as the bar,
-where there is no network to sniff.
+**requires `https://`** for the server URL, with two exceptions:
+
+* a **loopback** address — `http://127.0.0.1[:port]` / `http://localhost[:port]`
+  / `http://[::1][:port]` — for Navidrome running on the same machine as the
+  bar, where there is no network to sniff;
+* a server **on your own network**, if you opt in for that profile. Paste an
+  `http://` URL in the connect form and an **Allow plain http** toggle appears;
+  tick it and the profile is saved with `allowInsecure: true`. From the CLI the
+  same thing is `dromify-api configure --allow-http <name> <url> <user>`.
+
+The opt-in only covers hosts that can't be reached from the public internet:
+private ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`), CGNAT and
+tailnet addresses (`100.64/10`), IPv6 unique-local and link-local, `*.local` /
+`*.lan` / `*.home.arpa`, and bare single-label hostnames. A public `http://`
+host is refused even with the toggle on, so a port-forwarded or café-wifi
+server can't be reached in the clear by accident. A profile that opted in
+carries an `http` badge in the settings list, so it never looks like a normal
+one.
+
+What you're accepting: anyone who can sniff that network can lift the token and
+use it against your server — browsing and streaming your library, starring,
+editing playlists. Not admin. On a trusted home LAN that's usually a fine
+trade; on a network you don't control, use HTTPS.
 
 ### Getting HTTPS on a home server
 

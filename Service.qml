@@ -372,10 +372,17 @@ Item {
     })
   }
 
-  function configure(name, serverUrl, user, password, callback) {
+  // allowInsecure opts this profile into a plain http:// server on the local
+  // network. dromify-api refuses cleartext for anything but loopback unless
+  // the profile says so (see require_secure_url), and still refuses a public
+  // http:// host even then.
+  function configure(name, serverUrl, user, password, allowInsecure, callback) {
     connecting = true
     lastError = ""
-    _runWithSecret(configureProcess, [apiBin, "configure", name, serverUrl, user], password, function(data, err) {
+    var cmd = [apiBin, "configure"]
+    if (allowInsecure) cmd.push("--allow-http")
+    cmd.push(name, serverUrl, user)
+    _runWithSecret(configureProcess, cmd, password, function(data, err) {
       connecting = false
       if (err) {
         lastError = err

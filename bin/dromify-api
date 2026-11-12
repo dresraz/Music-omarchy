@@ -5,7 +5,7 @@
 #
 # Supports multiple named server profiles. Config lives in
 # ~/.config/omarchy/dromify/config.json:
-#   { "activeProfileId": "...", "profiles": [{id, name, serverURL, username}, ...] }
+#   { "activeProfileId": "...", "profiles": [{id, name, serverURL, username, allowInsecure}, ...] }
 # Passwords are kept out of that file entirely and stored one per profile id
 # in the desktop keyring via secret-tool (libsecret), matching the app's use
 # of the system Keychain rather than a plaintext blob.
@@ -18,7 +18,7 @@
 # a pipe, never an argv.
 #
 # Usage:
-#   dromify-api configure <name> <serverURL> <username>   # password on stdin
+#   dromify-api configure [--allow-http] <name> <serverURL> <username>   # password on stdin
 #                                               -> adds a profile, makes it active
 #   dromify-api relogin <profileId>                       # password on stdin
 #                                               -> re-signs a logged-out profile in
@@ -50,12 +50,52 @@ MAX_JSON_BYTES=$((16 * 1024 * 1024))    # API responses buffered in-shell
 MAX_COVER_BYTES=$((16 * 1024 * 1024))   # cover-art downloads (to disk)
 MAX_CONFIG_BYTES=$((1024 * 1024))       # our own config.json when we read it
 
-# The only hosts we will talk to over plain http://: the loopback literals,
-# i.e. a server on this same machine, where there is no wire to listen on.
-# Anywhere else the replayable Subsonic salt+token would cross a network in
-# the clear, so it must be https:// (see the README for getting a cert on a
-# home server via `tailscale serve`).
+# The hosts we will talk to over plain http://: the loopback literals (a
+# server on this same machine, where there is no wire to listen on), plus --
+# only for a profile that opted in with `configure --allow-http` -- hosts that
+# exist solely on a local network. A public http:// host stays refused even
+# with the opt-in, so a port-forwarded or cafe-wifi server can't be reached in
+# the clear by accident. Everything else must be https:// (see the README for
+# getting a cert on a home server via `tailscale serve`).
 LOOPBACK_HOSTS=" localhost 127.0.0.1 ::1 [::1] "
+
+# 1 when a cleartext http:// server is permitted for this run: set by
+# `configure --allow-http` (before any profile exists) or by
+# load_active_profile() for a profile saved with allowInsecure: true.
+ALLOW_INSECURE="${DROMIFY_ALLOW_INSECURE:-0}"
+
+# True for a host that only exists on a local network: RFC1918, CGNAT (which
+# is also what Tailscale hands out), link-local, IPv6 ULA/link-local,
+# mDNS/private-TLD names, and bare single-label hostnames (no dot, so they
+# cannot resolve on the public internet). $1 is a host from url_host(), i.e.
+# already lowercased and stripped of scheme, port, path and userinfo.
+is_private_host() {
+  local host="$1" o1 o2 o3 o4
+  [[ -n "$host" ]] || return 1
+  case "$host" in
+    *.local|*.lan|*.home.arpa|*.internal|*.ts.net) return 0 ;;
+    "[::1]"|"::1") return 0 ;;
+    "["f[cd]*) return 0 ;;      # IPv6 unique-local fc00::/7
+    "["fe[89ab]*) return 0 ;;   # IPv6 link-local fe80::/10
+  esac
+  if [[ "$host" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    o1=$((10#${BASH_REMATCH[1]})); o2=$((10#${BASH_REMATCH[2]}))
+    o3=$((10#${BASH_REMATCH[3]})); o4=$((10#${BASH_REMATCH[4]}))
+    (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || return 1
+    (( o1 == 10 )) && return 0                            # 10/8
+    (( o1 == 127 )) && return 0                           # loopback
+    (( o1 == 172 && o2 >= 16 && o2 <= 31 )) && return 0   # 172.16/12
+    (( o1 == 192 && o2 == 168 )) && return 0              # 192.168/16
+    (( o1 == 169 && o2 == 254 )) && return 0              # link-local
+    (( o1 == 100 && o2 >= 64 && o2 <= 127 )) && return 0  # CGNAT / tailnet
+    return 1
+  fi
+  # Anything left that is bracketed or carries a colon is an IPv6 literal we
+  # already declined above -- never treat it as a local hostname.
+  [[ "$host" == *:* || "$host" == \[* ]] && return 1
+  [[ "$host" != *.* ]] && return 0   # bare single-label name (mdns/dhcp)
+  return 1
+}
 
 # The plugin used to be called "Dromarchy" (before it took the Dromify
 # name to match the iOS app) - these are where its config/keyring entries
@@ -107,15 +147,34 @@ url_host() {
   printf '%s' "${r,,}"
 }
 
+# True when the *active profile* is marked allowInsecure. Consulted on the
+# cleartext path only (the https case never reads config), and needed because
+# callers such as cmd_get build their URL in a command substitution -- a
+# subshell, where a flag set by load_active_profile() would be lost.
+profile_allows_insecure() {
+  local cfg id
+  cfg=$(read_config 2>/dev/null) || return 1
+  [[ -n "$cfg" ]] || return 1
+  id=$(jq -r '.activeProfileId // empty' <<<"$cfg" 2>/dev/null) || return 1
+  [[ -n "$id" ]] || return 1
+  [[ "$(jq -r --arg id "$id" '(.profiles // [])[] | select(.id == $id) | .allowInsecure // false' <<<"$cfg" 2>/dev/null)" == true ]]
+}
+
 # False if the URL would put the replayable salt+token on a cleartext wire.
-# https:// always passes; http:// passes only to a loopback literal (a server
-# on this same machine). Everything else must be https://.
+# https:// always passes. http:// passes for a loopback literal (a server on
+# this same machine) and, when the profile opted in (allowInsecure: true, set
+# by `configure --allow-http`), for a host that only exists on a local network
+# -- that traffic never crosses the public internet. A public http:// host is
+# refused even with the opt-in.
 require_secure_url() {
   local scheme host
   scheme=$(url_scheme "$1"); host=$(url_host "$1")
   [[ "$scheme" == https ]] && return 0
-  [[ "$scheme" == http && "$LOOPBACK_HOSTS" == *" $host "* ]] && return 0
-  return 1
+  [[ "$scheme" == http ]] || return 1
+  [[ "$LOOPBACK_HOSTS" == *" $host "* ]] && return 0
+  is_private_host "$host" || return 1
+  [[ "$ALLOW_INSECURE" == 1 ]] && return 0
+  profile_allows_insecure
 }
 
 # curl against a fully-authenticated URL without putting it in argv. Every
@@ -132,7 +191,7 @@ curl_auth() {
     *[[:space:]]* | *[[:cntrl:]]* | *'"'*) fail "refusing to request a malformed URL" ;;
   esac
   require_secure_url "$url" \
-    || fail "insecure server URL: $(url_scheme "$url")://$(url_host "$url") -- must be https:// (plain http:// only for a server on this same machine); see README"
+    || fail "insecure server URL: $(url_scheme "$url")://$(url_host "$url") -- must be https:// (plain http:// is allowed for a server on this same machine, or on your own network once the profile opted in with --allow-http); see README"
 
   # Lock curl to the base scheme and refuse redirects. We never pass -L, so no
   # redirect is followed and curl's effective URL is always the one below;
@@ -281,6 +340,9 @@ load_active_profile() {
   [[ -n "$profile" ]] || return 1
   SERVER_URL=$(jq -r '.serverURL' <<<"$profile")
   USERNAME=$(jq -r '.username' <<<"$profile")
+  # A profile saved with allowInsecure: true may talk to a plain http:// server
+  # on the local network; see require_secure_url.
+  [[ "$(jq -r '.allowInsecure // false' <<<"$profile")" == true ]] && ALLOW_INSECURE=1
   [[ -n "$SERVER_URL" && "$SERVER_URL" != "null" && -n "$USERNAME" && "$USERNAME" != "null" ]] || return 1
   PASSWORD=$(secret-tool lookup service "$SECRET_SERVICE" profile "$id" 2>/dev/null) || return 1
   [[ -n "$PASSWORD" ]] || return 1
@@ -314,7 +376,7 @@ cmd_status() {
       has=false
     fi
     out=$(jq -c --argjson p "$p" --argjson has "$has" '. + [$p + {hasPassword: $has}]' <<<"$out")
-  done < <(jq -c '(.profiles // [])[] | {id, name, serverURL, username}' <<<"$cfg")
+  done < <(jq -c '(.profiles // [])[] | {id, name, serverURL, username, allowInsecure: (.allowInsecure // false)}' <<<"$cfg")
 
   local active="null"
   if [[ -n "$active_id" ]]; then
@@ -342,13 +404,21 @@ verify_credentials() {
 }
 
 cmd_configure() {
-  local name="$1" server="$2" username="$3" password
+  # --allow-http opts this profile into a cleartext server on the local
+  # network; it has to be honoured before verification, which builds a real
+  # request (and before the profile exists to read the flag back from).
+  local allow_http=0
+  if [[ "${1:-}" == "--allow-http" ]]; then allow_http=1; shift; fi
+  local name="${1:-}" server="${2:-}" username="${3:-}" password insecure=false
   password=$(read_secret_stdin)
   [[ -n "$name" && -n "$server" && -n "$username" && -n "$password" ]] \
-    || fail "usage: configure <name> <serverURL> <username>   (password on stdin)"
+    || fail "usage: configure [--allow-http] <name> <serverURL> <username>   (password on stdin)"
   [[ "$server" =~ ^https?:// ]] || fail "server URL must start with http:// or https://"
   server=$(normalize_url "$server")
-  require_secure_url "$server" || fail "server URL must be https:// (plain http:// is allowed only for a server on this same machine) -- see README for getting a cert on a home server"
+  [[ "$allow_http" == 1 ]] && ALLOW_INSECURE=1
+  require_secure_url "$server" \
+    || fail "server URL must be https:// (plain http:// is allowed for a server on this same machine, or for a server on your own network when you pass --allow-http) -- see README"
+  [[ "$allow_http" == 1 ]] && insecure=true
 
   local err
   err=$(verify_credentials "$server" "$username" "$password" 2>&1) || fail "$err"
@@ -356,9 +426,9 @@ cmd_configure() {
   local id cfg next
   id=$(new_id)
   cfg=$(read_config)
-  next=$(jq -c --arg id "$id" --arg name "$name" --arg u "$server" --arg n "$username" '
+  next=$(jq -c --arg id "$id" --arg name "$name" --arg u "$server" --arg n "$username" --argjson insecure "$insecure" '
     (.profiles // []) as $existing
-    | { activeProfileId: $id, profiles: ($existing + [{id: $id, name: $name, serverURL: $u, username: $n}]) }
+    | { activeProfileId: $id, profiles: ($existing + [{id: $id, name: $name, serverURL: $u, username: $n, allowInsecure: $insecure}]) }
   ' <<<"$cfg")
   write_config <<<"$next"
 
@@ -438,7 +508,8 @@ cmd_relogin() {
   server=$(jq -r '.serverURL' <<<"$profile")
   username=$(jq -r '.username' <<<"$profile")
   name=$(jq -r '.name' <<<"$profile")
-  require_secure_url "$server" || fail "profile server URL is insecure ($server); reconfigure it as https:// -- see README"
+  [[ "$(jq -r '.allowInsecure // false' <<<"$profile")" == true ]] && ALLOW_INSECURE=1
+  require_secure_url "$server" || fail "profile server URL is insecure ($server); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
 
   local err
   err=$(verify_credentials "$server" "$username" "$password" 2>&1) || fail "$err"
@@ -461,7 +532,7 @@ build_url() {
   local endpoint="$1"; shift
   require_active_profile
   require_secure_url "$SERVER_URL" \
-    || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// -- see README"
+    || fail "profile server URL is insecure ($SERVER_URL); reconfigure it as https:// (or as a local-network http:// server with --allow-http) -- see README"
   local salt token qs kv k v
   salt=$(head -c 16 /dev/urandom | md5sum | cut -c1-16)
   token=$(printf '%s' "${PASSWORD}${salt}" | md5sum | cut -d' ' -f1)
@@ -572,7 +643,7 @@ cmd_cover() {
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
-    configure) cmd_configure "${1:-}" "${2:-}" "${3:-}" ;;
+    configure) cmd_configure "$@" ;;
     status) cmd_status ;;
     switch) cmd_switch "${1:-}" ;;
     forget) cmd_forget "${1:-}" ;;
