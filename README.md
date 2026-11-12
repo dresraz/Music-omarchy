@@ -63,7 +63,7 @@ All in Arch's official repos, most already on a stock Omarchy install:
 ## Install
 
 ```
-omarchy plugin add https://github.com/tallahootie/dromify-omarchy.git --enable
+omarchy plugin add https://github.com/dresraz/Music-omarchy.git --enable
 ```
 
 Pick a bar section when prompted (default: right). Move it later with
@@ -72,7 +72,7 @@ Pick a bar section when prompted (default: right). Move it later with
 By hand:
 
 ```
-git clone https://github.com/tallahootie/dromify-omarchy.git \
+git clone https://github.com/dresraz/Music-omarchy.git \
   ~/.config/omarchy/plugins/tallahootie.dromify
 omarchy plugin enable tallahootie.dromify
 ```
