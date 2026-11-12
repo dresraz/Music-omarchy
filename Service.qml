@@ -993,6 +993,7 @@ Item {
   Process {
     id: apiProcess
     property var _cb: null
+    property var _pending: null
     running: false
     stdout: StdioCollector { id: apiOut; waitForEnd: true }
     stderr: StdioCollector { id: apiErr; waitForEnd: true }
@@ -1118,6 +1119,7 @@ Item {
   Process {
     id: copyPwProcess
     property var _cb: null
+    property var _pending: null
     running: false
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
@@ -1131,6 +1133,7 @@ Item {
   Process {
     id: statusProcess
     property var _cb: null
+    property var _pending: null
     running: false
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     stderr: StdioCollector { id: statusErr; waitForEnd: true }
@@ -1155,6 +1158,7 @@ Item {
   Process {
     id: configureProcess
     property var _cb: null
+    property var _pending: null
     property string _secret: ""
     stdinEnabled: true
     running: false
@@ -1184,6 +1188,7 @@ Item {
   Process {
     id: forgetProcess
     property var _cb: null
+    property var _pending: null
     running: false
     stdout: StdioCollector { id: forgetOut; waitForEnd: true }
     stderr: StdioCollector { id: forgetErr; waitForEnd: true }
@@ -1204,6 +1209,7 @@ Item {
   Process {
     id: loadProcess
     property var _cb: null
+    property var _pending: null
     running: false
     stdout: StdioCollector { id: loadOut; waitForEnd: true }
     stderr: StdioCollector { id: loadErr; waitForEnd: true }
@@ -1222,6 +1228,7 @@ Item {
   Process {
     id: playerCtlProcess
     property var _cb: null
+    property var _pending: null
     running: false
     stdout: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
@@ -1239,6 +1246,7 @@ Item {
   Process {
     id: playQueueProcess
     property var _cb: null
+    property var _pending: null
     property string _secret: ""
     stdinEnabled: true
     running: false
